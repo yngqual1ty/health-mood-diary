@@ -1,0 +1,1967 @@
+<!doctype html>
+
+<html lang="ru">
+
+
+
+<head>
+
+    <meta charset="utf-8">
+
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+
+    <title>Дневник настроения</title>
+
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+    <style>
+
+        :root {
+
+            color-scheme: light dark
+
+        }
+
+
+
+        body {
+
+            margin: 0;
+
+            padding: 20px 16px 36px;
+
+            font: 16px system-ui, sans-serif;
+
+            background: var(--tg-theme-bg-color, #fff);
+
+            color: var(--tg-theme-text-color, #111)
+
+        }
+
+
+
+        main {
+
+            max-width: 560px;
+
+            margin: auto
+
+        }
+
+
+
+        h1 {
+
+            font-size: 24px;
+
+            margin: 8px 0 4px
+
+        }
+
+
+
+        h2 {
+
+            font-size: 18px;
+
+            margin: 24px 0 10px
+
+        }
+
+
+
+        .muted {
+
+            color: var(--tg-theme-hint-color, #777);
+
+            font-size: 14px
+
+        }
+
+
+
+        .card {
+
+            background: var(--tg-theme-secondary-bg-color, #f2f2f2);
+
+            border-radius: 16px;
+
+            padding: 16px;
+
+            margin: 14px 0
+
+        }
+
+
+
+        .scores {
+
+            display: grid;
+
+            grid-template-columns: repeat(5, 1fr);
+
+            gap: 8px
+
+        }
+
+
+
+        button,
+
+        input,
+
+        textarea,
+
+        select {
+
+            font: inherit
+
+        }
+
+
+
+        button {
+
+            cursor: pointer;
+
+            border: 0;
+
+            border-radius: 12px;
+
+            padding: 12px;
+
+            background: var(--tg-theme-button-color, #2481cc);
+
+            color: var(--tg-theme-button-text-color, #fff)
+
+        }
+
+
+
+        .scores button {
+
+            background: var(--tg-theme-bg-color, #fff);
+
+            color: var(--tg-theme-text-color, #111);
+
+            border: 1px solid #aaa
+
+        }
+
+
+
+        .scores button.selected {
+
+            outline: 2px solid var(--tg-theme-button-color, #2481cc)
+
+        }
+
+
+
+        label {
+
+            display: block;
+
+            margin: 12px 0 6px
+
+        }
+
+
+
+        textarea,
+
+        select {
+
+            width: 100%;
+
+            box-sizing: border-box;
+
+            border-radius: 10px;
+
+            padding: 10px;
+
+            border: 1px solid #aaa;
+
+            background: var(--tg-theme-bg-color, #fff);
+
+            color: var(--tg-theme-text-color, #111)
+
+        }
+
+
+
+        .chips {
+
+            display: flex;
+
+            flex-wrap: wrap;
+
+            gap: 8px
+
+        }
+
+
+
+        .chip {
+
+            padding: 8px 10px;
+
+            border: 1px solid #aaa;
+
+            border-radius: 20px
+
+        }
+
+
+
+        .chip input {
+
+            margin-right: 5px
+
+        }
+
+
+
+        .full {
+
+            width: 100%;
+
+            margin-top: 12px
+
+        }
+
+
+
+        .hidden {
+
+            display: none
+
+        }
+
+
+
+        .entry {
+
+            padding: 10px 0;
+
+            border-bottom: 1px solid #aaa
+
+        }
+
+
+
+
+
+.tabs {
+
+    display: grid;
+
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+
+    gap: 8px;
+
+}
+
+		:root {
+			color-scheme: light;
+			--ink: #19343b;
+			--muted: #6b8185;
+			--surface: rgba(255, 255, 255, 0.92);
+			--line: #d8e7e6;
+			--teal: #087f79;
+			--teal-dark: #05645f;
+			--blue: #2d6f92;
+			--soft-teal: #e4f3f1;
+			--soft-blue: #e9f1f7;
+			--shadow: 0 14px 34px rgba(34, 79, 83, 0.1);
+		}
+
+		* {
+			box-sizing: border-box;
+		}
+
+		body {
+			min-height: 100vh;
+			padding: max(24px, env(safe-area-inset-top)) 16px max(40px, env(safe-area-inset-bottom));
+			font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+			line-height: 1.45;
+			color: var(--ink);
+			background:
+				repeating-linear-gradient(135deg, rgba(8, 127, 121, 0.035) 0 1px, transparent 1px 22px),
+				linear-gradient(180deg, #edf8f6 0%, #f7fbfb 48%, #edf3f7 100%);
+		}
+
+		main {
+			max-width: 620px;
+		}
+
+		h1 {
+			margin: 4px 4px 6px;
+			color: var(--ink);
+			font-family: Georgia, "Times New Roman", serif;
+			font-size: clamp(27px, 7vw, 36px);
+			line-height: 1.08;
+			letter-spacing: 0;
+		}
+
+		h1 + .muted {
+			margin: 0 4px 20px;
+			color: var(--muted);
+		}
+
+		h2 {
+			margin: 4px 0 14px;
+			color: var(--ink);
+			font-family: Georgia, "Times New Roman", serif;
+			font-size: 21px;
+			letter-spacing: 0;
+		}
+
+		.muted {
+			color: var(--muted);
+		}
+
+		.card {
+			margin: 12px 0;
+			padding: 18px;
+			border: 1px solid rgba(216, 231, 230, 0.95);
+			border-radius: 8px;
+			background: var(--surface);
+			box-shadow: var(--shadow);
+			backdrop-filter: blur(8px);
+		}
+
+		.tabs {
+			gap: 6px;
+		}
+
+		.tabs button {
+			min-height: 44px;
+			border: 1px solid transparent;
+			border-radius: 7px;
+			padding: 10px 8px;
+			color: var(--teal-dark);
+			background: var(--soft-teal);
+			font-weight: 700;
+			transition: background 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+		}
+
+		.tabs button:hover,
+		.tabs button:focus-visible {
+			background: #d3ece9;
+			box-shadow: 0 4px 12px rgba(8, 127, 121, 0.14);
+		}
+
+		button {
+			min-height: 44px;
+			border-radius: 7px;
+			background: var(--teal);
+			font-weight: 700;
+			transition: background 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+		}
+
+		button:hover,
+		button:focus-visible {
+			background: var(--teal-dark);
+			box-shadow: 0 6px 14px rgba(8, 127, 121, 0.2);
+		}
+
+		button:active {
+			transform: translateY(1px);
+		}
+
+		.scores {
+			gap: 7px;
+			margin: 14px 0 8px;
+		}
+
+		.scores button {
+			min-height: 48px;
+			border: 1px solid var(--line);
+			border-radius: 7px;
+			color: var(--ink);
+			background: #f8fcfc;
+			font-size: 18px;
+		}
+
+		.scores button:hover,
+		.scores button.selected {
+			border-color: var(--teal);
+			color: var(--teal-dark);
+			background: var(--soft-teal);
+			outline: none;
+			box-shadow: inset 0 0 0 2px rgba(8, 127, 121, 0.18);
+		}
+
+		label {
+			color: var(--ink);
+			font-weight: 700;
+		}
+
+		textarea,
+		select,
+		input[type="text"] {
+			width: 100%;
+			min-height: 46px;
+			border: 1px solid var(--line);
+			border-radius: 7px;
+			padding: 11px 12px;
+			color: var(--ink);
+			background: #fbfefe;
+			outline: none;
+			transition: border-color 160ms ease, box-shadow 160ms ease;
+		}
+
+		textarea:focus,
+		select:focus,
+		input[type="text"]:focus {
+			border-color: var(--teal);
+			box-shadow: 0 0 0 3px rgba(8, 127, 121, 0.13);
+		}
+
+		textarea {
+			min-height: auto;
+			resize: vertical;
+		}
+
+		.chips {
+			gap: 7px;
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			align-items: stretch;
+		}
+
+		.chip {
+			display: inline-flex;
+			align-items: center;
+			width: auto;
+			margin: 0;
+			border: 1px solid var(--line);
+			border-radius: 999px;
+			color: var(--blue);
+			background: var(--soft-blue);
+			font-weight: 600;
+			line-height: 1.2;
+			min-width: 0;
+		}
+
+		.chip input {
+			flex: 0 0 auto;
+			width: 16px;
+			height: 16px;
+			margin: 0 6px 0 0;
+			accent-color: var(--teal);
+		}
+
+		#survey label,
+		#startQuestionnaires label {
+			display: block;
+			margin: 18px 0 7px;
+			text-align: left;
+		}
+
+		#survey .muted,
+		#startQuestionnaires .muted {
+			margin-bottom: 8px;
+		}
+
+		.chip:has(input:checked) {
+			border-color: #83c5bd;
+			color: var(--teal-dark);
+			background: var(--soft-teal);
+		}
+
+		.entry {
+			margin: 0 -4px;
+			padding: 13px 4px;
+			border-bottom: 1px solid var(--line);
+		}
+
+		.patient-row {
+			display: block;
+			width: 100%;
+			margin: 8px 0;
+			padding: 14px 16px;
+			border: 1px solid var(--line);
+			border-radius: 8px;
+			color: var(--ink);
+			text-align: left;
+			background: #f7fbfb;
+			cursor: pointer;
+			transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+		}
+
+		.patient-row:hover,
+		.patient-row:focus-visible {
+			border-color: #83c5bd;
+			background: var(--soft-teal);
+			outline: none;
+		}
+
+		.patient-row:active {
+			transform: translateY(1px);
+		}
+
+		.patient-list-row {
+			display: flex;
+			align-items: stretch;
+			gap: 8px;
+		}
+
+		.patient-list-row .patient-row {
+			flex: 1;
+			min-width: 0;
+		}
+
+		.patient-unlink {
+			align-self: center;
+			flex: 0 0 auto;
+			min-height: 40px;
+			padding: 9px 12px;
+			background: #c95757;
+		}
+
+		.patient-unlink:hover,
+		.patient-unlink:focus-visible {
+			background: #a83d3d;
+		}
+
+		.questionnaire-result {
+			margin-top: 10px;
+			padding: 12px;
+			border: 1px solid var(--line);
+			border-radius: 8px;
+			background: #f7fbfb;
+		}
+
+		.questionnaire-score-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+			gap: 8px;
+			margin-top: 10px;
+		}
+
+		.questionnaire-score {
+			padding: 10px;
+			border-radius: 7px;
+			background: var(--soft-teal);
+		}
+
+		.questionnaire-score strong,
+		.questionnaire-score span {
+			display: block;
+		}
+
+		.questionnaire-score-value {
+			margin: 4px 0;
+			font-size: 20px;
+			font-weight: 700;
+		}
+
+		.questionnaire-answers {
+			margin-top: 12px;
+		}
+
+		.questionnaire-answers summary {
+			color: var(--teal-dark);
+			font-weight: 700;
+			cursor: pointer;
+		}
+
+		.questionnaire-answer {
+			padding: 9px 0;
+			border-bottom: 1px solid var(--line);
+		}
+
+		.admin-doctor-row {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 12px;
+			padding: 12px 0;
+			border-bottom: 1px solid var(--line);
+			color: var(--ink);
+		}
+
+		.admin-remove {
+			min-height: 36px;
+			padding: 7px 12px;
+			background: #c95757;
+		}
+
+		.admin-remove:hover,
+		.admin-remove:focus-visible {
+			background: #a83d3d;
+		}
+
+		.status {
+			color: var(--teal-dark);
+		}
+
+		@media (max-width: 420px) {
+			body {
+				padding-right: 12px;
+				padding-left: 12px;
+			}
+			.card {
+				padding: 15px;
+			}
+
+			.tabs button {
+				font-size: 13px;
+			}
+		}
+
+		.hidden {
+			display: none !important;
+		}
+
+
+
+.tabs button {
+
+    min-width: 0;
+
+    padding: 10px 4px;
+
+    overflow-wrap: anywhere;
+
+    font-size: 14px;
+
+}
+
+
+
+.tabs.doctor-mode {
+
+    grid-template-columns: minmax(0, 1fr);
+
+}
+
+
+
+.tabs.patient-mode {
+
+grid-template-columns: repeat(2, minmax(0, 1fr));
+
+}
+
+
+
+
+
+        .status {
+
+            min-height: 20px;
+
+            margin-top: 10px;
+
+            font-size: 14px
+
+        }
+
+		.tabs.admin-mode {
+			display: grid !important;
+			grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+			gap: 14px;
+			justify-items: stretch !important;
+			align-items: stretch !important;
+		}
+
+		#mainTabs.admin-mode button {
+			width: 100% !important;
+			max-width: none;
+			margin: 0 !important;
+		}
+
+		#doctor .full {
+			width: max-content;
+			max-width: 100%;
+			display: block !important;
+			margin-left: 0 !important;
+			margin-right: auto !important;
+		}
+
+		.tabs button,
+		button {
+			color: #ffffff !important;
+		}
+
+		.tabs button {
+			color: var(--teal-dark) !important;
+		}
+
+		.scores button {
+			color: var(--ink) !important;
+		}
+
+	</style>
+
+</head>
+
+
+
+<body>
+
+    <main>
+
+        <h1>Дневник настроения</h1>
+
+	<div id="appIntro" class="muted">Небольшая отметка о том, как вы себя чувствуете.</div>
+
+        <div class="card">
+
+
+
+<div class="tabs" id="mainTabs">
+
+    <button id="moodTabBtn" onclick="showTab('mood')">Настроение</button>
+
+    <button id="surveyTabBtn" onclick="showTab('survey')">Анкета</button>
+
+    <button id="startQuestionnairesTabBtn" onclick="showTab('startQuestionnaires')">Стартовые тесты</button>
+
+    <button id="historyTabBtn" onclick="showTab('history')">История</button>
+
+    <button id="doctorTabBtn" class="hidden" onclick="showTab('doctor')">
+
+        Пациенты
+
+    </button>
+    <button id="adminDoctorsTabBtn" class="hidden" onclick="showTab('adminDoctors')">
+        Врачи
+    </button>
+
+</div>
+
+</div>
+
+        <section id="mood">
+
+            <div class="card">
+
+                <h2>Как вы себя чувствуете?</h2>
+
+                <div class="scores" id="scores"><button data-score="1" onclick="pickScore(1)">1</button><button
+
+                        data-score="2" onclick="pickScore(2)">2</button><button data-score="3"
+
+                        onclick="pickScore(3)">3</button><button data-score="4" onclick="pickScore(4)">4</button><button
+
+                        data-score="5" onclick="pickScore(5)">5</button></div>
+
+                <div class="muted">1 — очень плохо, 5 — очень хорошо</div><label>Что вы чувствуете?
+
+                    (необязательно)</label>
+
+                <div class="chips">
+
+                    <label class="chip"><input type="checkbox" value="спокойствие">Спокойствие</label><label
+
+                        class="chip"><input type="checkbox" value="радость">Радость</label><label class="chip"><input
+
+                            type="checkbox" value="тревога">Тревога</label><label class="chip"><input type="checkbox"
+
+                            value="грусть">Грусть</label><label class="chip"><input type="checkbox"
+
+                            value="раздражение">Раздражение</label><label class="chip"><input type="checkbox"
+
+                            value="усталость">Усталость</label>
+
+                </div>
+
+                <label for="note">Комментарий (необязательно)</label><textarea id="note" rows="3" maxlength="2000"
+
+                    placeholder="Что повлияло на ваше состояние?"></textarea>
+
+                <button class="full" onclick="saveMood()">Сохранить запись</button>
+
+                <div id="moodStatus" class="status"></div>
+
+            </div>
+
+        </section>
+
+        <section id="survey" class="hidden">
+            <div class="card">
+
+                <h2>Короткая анкета</h2>
+
+                <div class="muted">Демонстрационные вопросы — не диагностический инструмент.</div>
+
+                <label>1. Как вы спали прошлой ночью?</label><select id="q_sleep" required>
+
+                    <option value="">Выберите</option>
+
+                    <option>Хорошо</option>
+
+                    <option>Средне</option>
+
+                    <option>Плохо</option>
+
+                </select>
+
+                <label>2. Насколько сильным был стресс сегодня?</label><select id="q_stress" required>
+
+                    <option value="">Выберите</option>
+
+                    <option>Низким</option>
+
+                    <option>Умеренным</option>
+
+                    <option>Высоким</option>
+
+                </select>
+
+                <label>3. Хотите добавить комментарий?</label><textarea id="q_note" rows="2"
+
+                    maxlength="1000"></textarea>
+
+                <button class="full" onclick="saveSurvey()">Отправить анкету</button>
+
+                <div id="surveyStatus" class="status"></div>
+
+            </div>
+        </section>
+
+	        <section id="startQuestionnaires" class="hidden">
+	            <div class="card">
+	                <h2>Стартовые тесты</h2>
+	                <div class="muted">Ответьте на каждый вопрос, чтобы сохранить результат.</div>
+	                <div id="questionnairesList">Загрузка…</div>
+	            </div>
+	        </section>
+
+        <section id="history" class="hidden">
+
+            <div class="card">
+
+                <h2>Последние записи</h2>
+
+                <div id="historyList" class="muted">Загрузка…</div><button class="full"
+
+                    onclick="loadHistory()">Обновить</button>
+
+            </div>
+
+        </section>
+
+
+
+<section id="doctor" class="hidden">
+
+    <div class="card">
+
+<h2>Мои пациенты</h2>
+<button class="full" onclick="createInvite()">Пригласить пациента</button>
+<div id="inviteStatus" class="status"></div>
+<div id="inviteResult" class="hidden">
+	<label for="inviteLink">Ссылка для пациента</label>
+	<input id="inviteLink" type="text" readonly onclick="copyInviteLink()">
+	<div class="muted">Нажмите на ссылку, чтобы скопировать её.</div>
+</div>
+
+        <div id="patientList">Загрузка…</div>
+		<div id="patientListStatus" class="status"></div>
+
+        <button class="full" onclick="loadPatients()">Обновить список</button>
+
+    </div>
+
+
+
+    <div id="patientDetails" class="hidden">
+
+        <div class="card">
+
+            <h2 id="patientTitle">Пациент</h2>
+			<label for="patientNameInput">Имя пациента</label>
+			<input id="patientNameInput" type="text" maxlength="120" placeholder="Введите имя">
+			<button class="full" onclick="savePatientName()">Сохранить имя</button>
+			<div id="patientNameStatus" class="status"></div>
+
+			<button class="full" onclick="showPatientList()">← К списку пациентов</button>
+
+        </div>
+
+
+
+        <div class="card">
+
+            <h2>Дневник настроения</h2>
+
+            <div id="patientMoods">Загрузка…</div>
+
+        </div>
+
+
+
+        <div class="card">
+
+            <h2>Ответы на анкеты</h2>
+
+            <div id="patientAnswers">Загрузка…</div>
+
+        </div>
+
+        <div class="card">
+
+            <h2>Ответы на стартовые тесты</h2>
+
+            <div id="patientQuestionnaireReport">Загрузка…</div>
+
+        </div>
+
+    </div>
+
+</section>
+
+<section id="adminDoctors" class="hidden">
+	<div class="card">
+		<h2>Врачи</h2>
+		<label for="adminDoctorIdInput">Telegram ID нового врача</label>
+		<input id="adminDoctorIdInput" type="number" min="1" step="1" inputmode="numeric" placeholder="Например, 123456789">
+		<button class="full" onclick="createDoctorFromList()">Добавить врача</button>
+		<div id="adminDoctorStatus" class="status"></div>
+	</div>
+	<div class="card">
+		<div id="adminDoctorList">Загрузка…</div>
+		<button class="full" onclick="loadDoctors()">Обновить список</button>
+	</div>
+</section>
+
+	<div id="appDisclaimer" class="muted">Дневник не отслеживается в режиме реального времени и не заменяет помощь специалиста.</div>
+
+    </main>
+
+    <script>
+
+        const tg = window.Telegram?.WebApp; tg?.ready(); tg?.expand(); let score = 0;
+
+
+        function pickScore(n) { score = n; document.querySelectorAll('#scores button').forEach(b => b.classList.toggle('selected', Number(b.dataset.score) === n)) }
+
+        function headers() { return { 'Content-Type': 'application/json', 'Authorization': 'tma ' + (tg?.initData || '') } }
+
+        async function api(path, options = {}) { const r = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } }); const d = await r.json().catch(() => ({})); if (!r.ok) throw Error(d.detail || 'Ошибка запроса'); return d }
+
+        async function saveMood() {
+
+            if (!score || score < 1 || score > 5) {
+
+                alert('Сначала выберите оценку настроения от 1 до 5.');
+
+                return;
+
+            }
+
+
+
+            const emotions = [...document.querySelectorAll(
+
+                'input[type="checkbox"]:checked'
+
+            )].map(el => el.value);
+
+
+
+            const note = document.getElementById('note').value.trim();
+
+
+
+            try {
+
+                await api('/api/moods', {
+
+                    method: 'POST',
+
+                    body: JSON.stringify({
+
+                        score,
+
+                        emotions,
+
+                        note
+
+                    })
+
+                });
+
+
+
+                alert('Запись сохранена!');
+
+            } catch (error) {
+
+                alert(error.message || 'Не удалось сохранить запись.');
+
+            }
+
+        }
+
+        async function saveSurvey() {
+            const status = document.getElementById('surveyStatus');
+            const sleep = document.getElementById('q_sleep');
+            const stress = document.getElementById('q_stress');
+            if (!sleep.value || !stress.value) {
+                status.textContent = 'Ответьте на оба обязательных вопроса.';
+                (!sleep.value ? sleep : stress).reportValidity();
+                return;
+            }
+            const answers = {
+                sleep: sleep.value,
+                stress: stress.value,
+                note: document.getElementById('q_note').value
+            };
+            try {
+                await api('/api/answers', {
+                    method: 'POST',
+                    body: JSON.stringify({ questionnaire_id: 'daily-checkin-v1', answers })
+                });
+                status.textContent = 'Анкета отправлена.';
+            } catch (error) {
+                status.textContent = error.message || 'Не удалось отправить анкету.';
+            }
+        }
+
+        async function saveQuestionnaire(questionnaireId, form) {
+            const status = form.querySelector('.status');
+            const unanswered = [...form.querySelectorAll('select')].find(select => !select.value);
+            if (unanswered) {
+                status.textContent = 'Ответьте на все вопросы опросника.';
+                unanswered.reportValidity();
+                return;
+            }
+            const answers = {};
+            new FormData(form).forEach((value, key) => { answers[key] = Number(value); });
+            try {
+                await api('/api/answers', {
+                    method: 'POST',
+                    body: JSON.stringify({ questionnaire_id: questionnaireId, answers })
+                });
+                await loadQuestionnaires();
+            } catch (error) {
+                status.textContent = error.message || 'Не удалось сохранить опросник.';
+            }
+        }
+
+        async function loadQuestionnaires() {
+            const list = document.getElementById('questionnairesList');
+            if (!list) return;
+            try {
+                const data = await api('/api/questionnaires');
+                const pending = data.items.filter(item => item.latest?.status !== 'completed');
+                list.replaceChildren();
+                if (!pending.length) {
+                    list.textContent = 'Все стартовые тесты пройдены.';
+                    return;
+                }
+                pending.forEach(questionnaire => {
+                    const card = document.createElement('div');
+                    card.className = 'entry';
+                    const title = document.createElement('b');
+                    title.textContent = questionnaire.title;
+                    const description = document.createElement('div');
+                    description.textContent = questionnaire.description || '';
+                    card.append(title, description);
+                    if (!questionnaire.available || !questionnaire.items?.length) {
+                        const note = document.createElement('div');
+                        note.className = 'muted';
+                        note.textContent = 'Текст вопросов ещё не подключён.';
+                        card.appendChild(note);
+                    } else {
+                        const form = document.createElement('form');
+                        questionnaire.items.forEach(item => {
+                            const label = document.createElement('label');
+                            label.textContent = item.text;
+                            const select = document.createElement('select');
+                            select.name = item.id;
+                            select.required = true;
+                            select.innerHTML = '<option value="">Выберите</option>' +
+                                item.options.map(option => `<option value="${esc(option.value)}">${esc(option.label)}</option>`).join('');
+                            label.appendChild(select);
+							if (questionnaire.id === 'bdi' && item.id === 'bdi-9') {
+								const warning = document.createElement('div');
+								warning.className = 'muted';
+								warning.textContent = 'Если этот пункт вызывает опасение за вашу безопасность, обратитесь за срочной помощью к специалисту или в экстренную службу.';
+								label.appendChild(warning);
+							}
+                            form.appendChild(label);
+                        });
+                        const submit = document.createElement('button');
+                        submit.type = 'submit';
+                        submit.textContent = 'Сохранить ответы';
+                        const status = document.createElement('div');
+                        status.className = 'status';
+                        form.onsubmit = event => {
+                            event.preventDefault();
+                            if (form.reportValidity()) saveQuestionnaire(questionnaire.id, form);
+                        };
+                        form.append(submit, status);
+                        card.appendChild(form);
+                    }
+                    list.appendChild(card);
+                });
+            } catch (error) {
+                list.textContent = error.message || 'Не удалось загрузить опросники.';
+            }
+        }
+
+        async function loadHistory() { const t = document.getElementById('historyList'); try { const d = await api('/api/moods'); if (!d.items.length) { t.textContent = 'Записей пока нет.'; return } t.innerHTML = d.items.map(x => `<div class="entry"><b>${x.score}/5</b> · ${esc(x.created_at)}<br>${esc(x.emotions || '')}<br>${esc(x.note || '')}</div>`).join('') } catch (e) { t.textContent = e.message } }
+
+        function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) }
+
+
+
+let currentPatientId = null;
+
+
+
+
+
+
+
+let currentRole = null;
+let isAdminDoctor = false;
+
+
+
+async function initApp() {
+
+    try {
+
+        const me = await api('/api/me');
+
+        currentRole = me.role;
+
+
+
+        const tabs = document.getElementById('mainTabs');
+
+	const doctorButton = document.getElementById('doctorTabBtn');
+	const adminDoctorsButton = document.getElementById('adminDoctorsTabBtn');
+
+
+
+        const isDoctor = currentRole === 'doctor';
+isAdminDoctor = isDoctor && me.is_admin === true;
+        tabs.classList.toggle('doctor-mode', isDoctor);
+
+        tabs.classList.toggle('patient-mode', !isDoctor);
+        tabs.classList.toggle('admin-mode', isAdminDoctor);
+
+
+
+        doctorButton.classList.toggle('hidden', !isDoctor);
+	adminDoctorsButton.classList.toggle('hidden', !isAdminDoctor);
+	tabs.parentElement.classList.toggle('hidden', isDoctor && !isAdminDoctor);
+
+
+
+        ['moodTabBtn', 'surveyTabBtn', 'startQuestionnairesTabBtn', 'historyTabBtn'].forEach(id => {
+
+            document.getElementById(id).classList.toggle('hidden', isDoctor);
+
+        });
+
+
+
+        // Врач сразу попадает в список пациентов.
+
+        showTab(isDoctor ? 'doctor' : 'mood');
+        if (!isDoctor) loadQuestionnaires();
+
+    } catch (e) {
+
+        document.querySelector('main').replaceChildren();
+
+
+
+        const message = document.createElement('p');
+
+        message.textContent =
+
+            'Не удалось проверить доступ. Откройте приложение через Telegram.';
+
+        document.querySelector('main').appendChild(message);
+
+
+
+        console.error(e);
+
+    }
+
+}
+
+
+
+async function loadDoctors() {
+	const list = document.getElementById('adminDoctorList');
+	list.textContent = 'Загрузка…';
+
+	try {
+		const data = await api('/api/admin/doctors');
+		list.replaceChildren();
+		if (!data.items.length) {
+			list.textContent = 'Врачей пока нет.';
+			return;
+		}
+		data.items.forEach(doctor => {
+			const row = document.createElement('div');
+			row.className = 'admin-doctor-row';
+			const name = doctor.display_name?.trim()
+				|| [doctor.first_name, doctor.last_name].filter(Boolean).join(' ').trim()
+				|| (doctor.username?.trim() ? '@' + doctor.username.trim() : 'Без имени');
+			row.innerHTML = `<span>${esc(name)} · ${doctor.telegram_id}</span>`;
+			if (!doctor.is_admin) {
+				const remove = document.createElement('button');
+				remove.type = 'button';
+				remove.className = 'admin-remove';
+				remove.textContent = 'Удалить';
+				remove.onclick = () => deleteDoctor(doctor.telegram_id);
+				row.appendChild(remove);
+			}
+			list.appendChild(row);
+		});
+	} catch (error) {
+		list.textContent = error.message || 'Не удалось загрузить врачей.';
+	}
+}
+
+async function createDoctorFromList() {
+	const input = document.getElementById('adminDoctorIdInput');
+	const status = document.getElementById('adminDoctorStatus');
+	const telegramId = Number(input.value.trim());
+	if (!Number.isSafeInteger(telegramId) || telegramId <= 0) {
+		status.textContent = 'Введите корректный Telegram ID.';
+		return;
+	}
+	try {
+		await api('/api/admin/doctors', {
+			method: 'POST',
+			body: JSON.stringify({ telegram_id: telegramId })
+		});
+		status.textContent = 'Врач добавлен.';
+		input.value = '';
+		loadDoctors();
+	} catch (error) {
+		status.textContent = error.message || 'Не удалось добавить врача.';
+	}
+}
+
+async function deleteDoctor(doctorId) {
+	if (!confirm(`Удалить врача ${doctorId}?`)) return;
+	try {
+		await api(`/api/admin/doctors/${doctorId}`, { method: 'DELETE' });
+		loadDoctors();
+	} catch (error) {
+		document.getElementById('adminDoctorStatus').textContent =
+			error.message || 'Не удалось удалить врача.';
+	}
+}
+
+function showTab(tab) {
+
+    if (currentRole === 'doctor' && tab !== 'doctor') return;
+
+    if (currentRole !== 'doctor' && tab === 'doctor') return;
+
+
+
+    ['mood', 'survey', 'history', 'doctor'].forEach(id => {
+
+        document.getElementById(id)?.classList.toggle('hidden', id !== tab);
+
+    });
+
+
+
+    if (tab === 'history') loadHistory();
+
+
+
+    if (tab === 'doctor') {
+
+        document.getElementById('patientDetails').classList.add('hidden');
+
+        document.getElementById('patientList').classList.remove('hidden');
+
+	showPatientList();
+	document.getElementById('mainTabs').parentElement.classList.add('hidden');
+	document.getElementById('appIntro').classList.add('hidden');
+	document.getElementById('appDisclaimer').classList.add('hidden');
+
+    }
+
+}
+
+
+
+
+
+async function createInvite() {
+	const status = document.getElementById('inviteStatus');
+	const result = document.getElementById('inviteResult');
+	const input = document.getElementById('inviteLink');
+
+	status.textContent = 'Создание ссылки…';
+
+	try {
+		const data = await api('/api/doctor/invites', { method: 'POST' });
+		if (!data.bot_username || !data.start_payload) {
+			throw new Error('Не настроено имя Telegram-бота.');
+		}
+
+		input.value = `https://t.me/${data.bot_username}?start=${encodeURIComponent(data.start_payload)}`;
+		result.classList.remove('hidden');
+		await copyInviteLink();
+		status.textContent = 'Ссылка создана и скопирована.';
+	} catch (error) {
+		status.textContent = error.message || 'Не удалось создать ссылку.';
+	}
+}
+
+async function copyInviteLink() {
+	const input = document.getElementById('inviteLink');
+	if (!input.value) return;
+
+	try {
+		await navigator.clipboard.writeText(input.value);
+	} catch (error) {
+		input.focus();
+		input.select();
+		document.execCommand('copy');
+	}
+}
+
+function showPatientList() {
+	document.getElementById('patientDetails').classList.add('hidden');
+	document.getElementById('patientList').classList.remove('hidden');
+	loadPatients();
+}
+
+async function loadPatients() {
+
+	const list = document.getElementById('patientList');
+
+	list.textContent = 'Загрузка пациентов…';
+
+
+
+    try {
+
+        const data = await api('/api/doctor/patients');
+
+
+
+        if (!data.items.length) {
+
+            list.textContent = 'Пока нет привязанных пациентов.';
+
+            return;
+
+        }
+
+
+
+        list.replaceChildren();
+
+
+
+		data.items.forEach(patient => {
+			const patientRow = document.createElement('div');
+			patientRow.className = 'patient-list-row';
+			const patientCard = document.createElement('article');
+
+			patientCard.className = 'patient-row';
+			patientCard.tabIndex = 0;
+			patientCard.setAttribute('role', 'button');
+			const button = patientCard;
+
+
+
+            const mood = patient.last_mood == null
+
+                ? 'Нет записей настроения'
+
+                : `Последняя оценка: ${patient.last_mood}/5`;
+
+
+
+            const fullName = [patient.first_name, patient.last_name]
+
+    .filter(Boolean)
+
+    .join(' ')
+
+    .trim();
+
+
+
+const displayName = (patient.display_name ? patient.display_name.trim() : '') || fullName
+
+    || (patient.username ? '@' + patient.username : 'Пациент');
+
+
+
+button.textContent =
+    `${displayName} · ${mood} · Анкет: ${patient.answers_count}`;
+
+            button.onclick = () => openPatient(patient.telegram_id);
+        	patientRow.appendChild(button);
+        	const removeButton = document.createElement('button');
+        	removeButton.type = 'button';
+        	removeButton.className = 'patient-unlink';
+        	removeButton.textContent = 'Удалить';
+        	removeButton.setAttribute('aria-label', `Удалить пациента ${displayName} из списка врача`);
+        	removeButton.onclick = event => {
+        		event.preventDefault();
+        		event.stopPropagation();
+        		unlinkPatient(patient.telegram_id, displayName);
+        	};
+        	patientRow.appendChild(removeButton);
+            list.appendChild(patientRow);
+        });
+
+    } catch (e) {
+
+        list.textContent = e.message;
+
+    }
+}
+
+async function unlinkPatient(patientId, patientName) {
+    if (!confirm(`Убрать пациента «${patientName}» из списка? История настроения и ответы сохранятся.`)) {
+    	return;
+    }
+    const status = document.getElementById('patientListStatus');
+    status.textContent = '';
+    try {
+    	await api(`/api/doctor/patients/${patientId}`, { method: 'DELETE' });
+    	status.textContent = 'Пациент отвязан. Его данные сохранены.';
+    	await loadPatients();
+    } catch (error) {
+    	status.textContent = error.message || 'Не удалось удалить связь с пациентом.';
+    }
+}
+
+async function openPatient(patientId) {
+
+	currentPatientId = patientId;
+
+
+
+    const title = document.getElementById('patientTitle');
+
+title.textContent = 'Загрузка данных пациента…';
+
+    document.getElementById('patientList').classList.add('hidden');
+    document.getElementById('patientDetails').classList.remove('hidden');
+
+
+
+const patientData = await api('/api/doctor/patients');
+
+const patient = patientData.items.find(
+
+    p => Number(p.telegram_id) === Number(patientId)
+
+);
+
+
+
+const fullName = patient
+
+    ? [patient.first_name, patient.last_name].filter(Boolean).join(' ').trim()
+
+    : '';
+
+
+
+title.textContent = fullName
+
+    || (patient?.username ? '@' + patient.username : 'Пациент');
+
+
+
+    document.getElementById('patientList').classList.add('hidden');
+
+    document.getElementById('patientDetails').classList.remove('hidden');
+
+
+
+    const moods = document.getElementById('patientMoods');
+
+    const answers = document.getElementById('patientAnswers');
+
+
+
+    moods.textContent = 'Загрузка записей…';
+
+    answers.textContent = 'Загрузка анкет…';
+
+
+
+    try {
+
+        const data = await api(
+        );
+
+
+
+        moods.replaceChildren();
+
+
+
+        if (!data.items.length) {
+
+            moods.textContent = 'Записей пока нет.';
+
+			patientCard.textContent =
+
+            data.items.forEach(item => {
+			patientCard.onclick = () => openPatient(patient);
+			patientCard.onkeydown = event => {
+				if (event.key === 'Enter' || event.key === ' ') {
+					event.preventDefault();
+					openPatient(patient);
+				}
+			};
+                const entry = document.createElement('div');
+			list.appendChild(patientCard);
+                entry.className = 'entry';
+
+
+
+                const title = document.createElement('b');
+
+                title.textContent = `${item.score}/5 · ${item.created_at}`;
+
+
+
+                const text = document.createElement('div');
+
+                text.textContent =
+
+                    [item.emotions, item.note].filter(Boolean).join(' — ');
+
+
+
+                entry.append(title, text);
+
+                moods.appendChild(entry);
+
+            });
+
+        }
+
+    } catch (e) {
+
+        moods.textContent = e.message;
+
+    }
+
+
+
+    try {
+
+        const data = await api(
+
+            `/api/doctor/patients/${patientId}/answers`
+
+        );
+
+
+
+        answers.replaceChildren();
+
+
+
+        if (!data.items.length) {
+
+            answers.textContent = 'Анкет пока нет.';
+
+        } else {
+
+            data.items.forEach(item => {
+
+                const entry = document.createElement('div');
+
+                entry.className = 'entry';
+
+
+
+                const title = document.createElement('b');
+
+                title.textContent =
+
+                    `${item.questionnaire_id} · ${item.created_at}`;
+
+
+
+
+
+const labels = {
+
+    sleep: 'Сон прошлой ночью',
+
+    stress: 'Уровень стресса',
+
+    note: 'Комментарий'
+
+};
+
+
+
+const answerList = document.createElement('div');
+
+
+
+Object.entries(item.payload || {}).forEach(([key, value]) => {
+
+    const row = document.createElement('div');
+
+    row.className = 'entry';
+
+
+
+    const label = document.createElement('b');
+
+    label.textContent = labels[key] || key;
+
+
+
+    const answer = document.createElement('div');
+
+    answer.textContent =
+
+        value === null || value === '' || value === undefined
+
+            ? 'Не указано'
+
+            : String(value);
+
+
+
+    row.append(label, answer);
+
+    answerList.appendChild(row);
+
+});
+
+
+
+entry.append(title, answerList);
+
+answers.appendChild(entry);
+
+
+
+            });
+
+        }
+
+    } catch (e) {
+
+        answers.textContent = e.message;
+
+    }
+
+}
+
+
+
+
+
+async function openPatient(patientId) {
+	currentPatientId = patientId;
+	const list = document.getElementById('patientList');
+	const details = document.getElementById('patientDetails');
+	const title = document.getElementById('patientTitle');
+	const moods = document.getElementById('patientMoods');
+	const answers = document.getElementById('patientAnswers');
+	const report = document.getElementById('patientQuestionnaireReport');
+
+	list.classList.add('hidden');
+	details.classList.remove('hidden');
+	title.textContent = 'Загрузка данных пациента…';
+	moods.textContent = 'Загрузка записей…';
+	answers.textContent = 'Загрузка анкет…';
+	report.textContent = 'Загрузка отчета…';
+
+	try {
+		const patients = await api('/api/doctor/patients');
+		const patient = patients.items.find(
+			item => Number(item.telegram_id) === Number(patientId)
+		);
+		const fullName = patient
+			? [patient.first_name, patient.last_name].filter(Boolean).join(' ').trim()
+			: '';
+		const displayName = patient?.display_name?.trim() || fullName;
+		title.textContent = displayName
+			|| (patient?.username ? '@' + patient.username : 'Пациент');
+		document.getElementById('patientNameInput').value = displayName
+			|| (patient?.username?.trim() ? '@' + patient.username.trim() : 'Пациент');
+	} catch (error) {
+		title.textContent = 'Пациент';
+	}
+
+	try {
+		const data = await api(`/api/doctor/patients/${patientId}/moods`);
+		moods.replaceChildren();
+		if (!data.items.length) {
+			moods.textContent = 'Записей пока нет.';
+		} else {
+			data.items.forEach(item => {
+				const entry = document.createElement('div');
+				entry.className = 'entry';
+				const itemTitle = document.createElement('b');
+				itemTitle.textContent = `${item.score}/5 · ${item.created_at}`;
+				const text = document.createElement('div');
+				text.textContent = [item.emotions, item.note].filter(Boolean).join(' — ');
+				entry.append(itemTitle, text);
+				moods.appendChild(entry);
+			});
+		}
+	} catch (error) {
+		moods.textContent = error.message || 'Не удалось загрузить дневник.';
+	}
+
+	try {
+		const data = await api(`/api/doctor/patients/${patientId}/answers`);
+		answers.replaceChildren();
+		report.replaceChildren();
+
+		const questionnaireTitles = {
+			hads: 'HADS',
+			bai: 'BAI',
+			bdi: 'BDI'
+		};
+		const startupQuestionnaireIds = ['hads', 'bai', 'bdi'];
+		const questionnaireMetadata = data.questionnaires || {};
+		const completedByQuestionnaire = new Map(
+			startupQuestionnaireIds.map(id => [id, []])
+		);
+		data.items.forEach(item => {
+			if (item.status === 'completed' && completedByQuestionnaire.has(item.questionnaire_id)) {
+				completedByQuestionnaire.get(item.questionnaire_id).push(item);
+			}
+		});
+		startupQuestionnaireIds.forEach(id => {
+			const entry = document.createElement('div');
+			entry.className = 'questionnaire-result';
+			const completed = completedByQuestionnaire.get(id);
+			const itemTitle = document.createElement('b');
+			itemTitle.textContent = questionnaireMetadata[id]?.title || questionnaireTitles[id];
+			const state = document.createElement('div');
+			state.className = 'muted';
+			state.textContent = completed.length
+				? `Пройдено ${completed.length} раз · последнее прохождение ${completed[0].created_at}`
+				: 'Не пройдено';
+			entry.append(itemTitle, state);
+			completed.forEach(item => {
+				const attempt = document.createElement('div');
+				attempt.className = 'questionnaire-result';
+				const attemptDate = document.createElement('strong');
+				attemptDate.textContent = `Результат · ${item.created_at}`;
+				attempt.appendChild(attemptDate);
+				const answersById = item.payload || {};
+				const questionnaire = questionnaireMetadata[id] || {};
+				const questions = questionnaire.items || [];
+				const scoring = questionnaire.scoring || {};
+				const scoreGrid = document.createElement('div');
+				scoreGrid.className = 'questionnaire-score-grid';
+				const appendScore = (label, score, interpretation, maxScore) => {
+					const tile = document.createElement('div');
+					tile.className = 'questionnaire-score';
+					const title = document.createElement('strong');
+					title.textContent = label;
+					const value = document.createElement('span');
+					value.className = 'questionnaire-score-value';
+					value.textContent = `${score} из ${maxScore}`;
+					const meaning = document.createElement('span');
+					meaning.textContent = interpretation || '';
+					tile.append(title, value, meaning);
+					scoreGrid.appendChild(tile);
+				};
+				if (item.result?.type === 'domains') {
+					Object.entries(item.result.domains || {}).forEach(([domain, result]) => {
+						const domainConfig = scoring.domains?.[domain] || {};
+						const domainItems = questions.filter(question => question.domain === domain);
+						const maxScore = domainItems.reduce(
+							(total, question) => total + Math.max(
+								0,
+								...(question.options || []).map(option => Number(option.value) || 0)
+							),
+							0
+						);
+						appendScore(
+							domainConfig.title || domain,
+							result.score,
+							result.interpretation,
+							maxScore
+						);
+					});
+				} else if (item.result?.type === 'sum') {
+					const maxScore = questions.reduce(
+						(total, question) => total + Math.max(
+							0,
+							...(question.options || []).map(option => Number(option.value) || 0)
+						),
+						0
+					);
+					appendScore(
+						'Общий результат',
+						item.result.score,
+						item.result.interpretation,
+						maxScore
+					);
+				}
+				if (scoreGrid.childElementCount) attempt.appendChild(scoreGrid);
+
+				const answerDetails = document.createElement('details');
+				answerDetails.className = 'questionnaire-answers';
+				const answerSummary = document.createElement('summary');
+				answerSummary.textContent = `Ответы на вопросы (${questions.length})`;
+				answerDetails.appendChild(answerSummary);
+				questions.forEach(question => {
+					const row = document.createElement('div');
+					row.className = 'questionnaire-answer';
+					const selectedOption = question.options?.find(
+						option => String(option.value) === String(answersById[question.id])
+					);
+					const questionText = document.createElement('strong');
+					questionText.textContent = question.text;
+					const answerText = document.createElement('div');
+					answerText.textContent = selectedOption?.label || 'Не указано';
+					row.append(questionText, answerText);
+					answerDetails.appendChild(row);
+				});
+				attempt.appendChild(answerDetails);
+				entry.appendChild(attempt);
+			});
+			report.appendChild(entry);
+		});
+
+		const historyItems = data.items.filter(item =>
+			item.status === 'completed'
+			&& !startupQuestionnaireIds.includes(item.questionnaire_id)
+		);
+		if (!historyItems.length) {
+			answers.textContent = 'Анкет пока нет.';
+		} else {
+			const answerTitles = {
+				'daily-checkin-v1': 'Ежедневная анкета самочувствия'
+			};
+			const answerLabels = {
+				sleep: 'Сон прошлой ночью',
+				stress: 'Уровень стресса',
+				note: 'Комментарий'
+			};
+			const historyValues = {
+				Низким: 'Низкий',
+				Умеренным: 'Умеренный',
+				Высоким: 'Высокий'
+			};
+			historyItems.forEach(item => {
+				const entry = document.createElement('div');
+				entry.className = 'entry';
+				const itemTitle = document.createElement('b');
+				itemTitle.textContent = `${answerTitles[item.questionnaire_id] || item.questionnaire_id} · ${item.created_at}`;
+				const answerList = document.createElement('div');
+				Object.entries(item.payload || {}).forEach(([key, value]) => {
+					const row = document.createElement('div');
+					const formattedValue = key === 'stress'
+						? historyValues[value] || value
+						: value;
+					row.textContent = `${answerLabels[key] || key}: ${formattedValue || 'Не указано'}`;
+					answerList.appendChild(row);
+				});
+				entry.append(itemTitle, answerList);
+				answers.appendChild(entry);
+			});
+		}
+	} catch (error) {
+		answers.textContent = error.message || 'Не удалось загрузить анкеты.';
+	}
+}
+
+async function saveMood() {
+	const status = document.getElementById('moodStatus');
+
+	if (!score || score < 1 || score > 5) {
+		status.textContent = 'Сначала выберите оценку настроения от 1 до 5.';
+		return;
+	}
+
+	const emotions = [...document.querySelectorAll('#mood input[type="checkbox"]:checked')]
+		.map(input => input.value);
+	const note = document.getElementById('note').value.trim();
+
+	try {
+		await api('/api/moods', {
+			method: 'POST',
+			body: JSON.stringify({ score, emotions, note })
+		});
+
+		status.textContent = 'Запись сохранена. Теперь заполните анкету.';
+		score = 0;
+		document.querySelectorAll('#scores button').forEach(button => {
+			button.classList.remove('selected');
+		});
+		document.getElementById('note').value = '';
+		document.querySelectorAll('#mood input[type="checkbox"]').forEach(input => {
+			input.checked = false;
+		});
+		showTab('survey');
+	} catch (error) {
+		status.textContent = error.message || 'Не удалось сохранить запись.';
+	}
+}
+
+function showTab(tab) {
+	if (currentRole === 'doctor' && !isAdminDoctor && tab !== 'doctor') return;
+	if (currentRole !== 'doctor' && tab === 'doctor') return;
+
+	['mood', 'survey', 'startQuestionnaires', 'history', 'doctor', 'adminDoctors'].forEach(id => {
+		document.getElementById(id)?.classList.toggle('hidden', id !== tab);
+	});
+
+	if (tab === 'startQuestionnaires') loadQuestionnaires();
+	if (tab === 'history') loadHistory();
+	if (tab === 'doctor') {
+		document.getElementById('mainTabs').parentElement.classList.toggle('hidden', !isAdminDoctor);
+		showPatientList();
+	}
+	if (tab === 'adminDoctors') loadDoctors();
+}
+
+async function savePatientName() {
+	const input = document.getElementById('patientNameInput');
+	const name = input.value.trim();
+	if (!name || currentPatientId === null) return;
+
+	try {
+		await api(`/api/doctor/patients/${currentPatientId}`, {
+			method: 'POST',
+			body: JSON.stringify({ display_name: name })
+		});
+		document.getElementById('patientTitle').textContent = name;
+		document.getElementById('patientNameStatus').textContent = 'Имя сохранено.';
+		await loadPatients();
+		document.getElementById('patientDetails').classList.remove('hidden');
+		document.getElementById('patientList').classList.add('hidden');
+	} catch (error) {
+		document.getElementById('patientNameStatus').textContent =
+			error.message || 'Не удалось сохранить имя.';
+	}
+}
+
+initApp();
+</script>
+
+</body>
+
+
+
+</html>
