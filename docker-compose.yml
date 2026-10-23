@@ -9,6 +9,7 @@ services:
           - mood-diary-api
     environment:
       DATABASE_PATH: /data/mood.sqlite3
+
     volumes:
       - mood-data:/data
     healthcheck:
@@ -37,6 +38,8 @@ services:
       api:
         condition: service_healthy
     restart: unless-stopped
+    networks:
+      - web
 
 volumes:
   mood-data:
