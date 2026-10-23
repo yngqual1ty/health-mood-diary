@@ -1,9 +1,12 @@
 services:
   api:
     build: .
-    ports:
-      - "8000:8000"
     env_file: .env
+    networks:
+      default:
+      web:
+        aliases:
+          - mood-diary-api
     environment:
       DATABASE_PATH: /data/mood.sqlite3
     volumes:
@@ -37,3 +40,7 @@ services:
 
 volumes:
   mood-data:
+
+networks:
+  web:
+    external: true
