@@ -12,6 +12,7 @@ print("APP_URL из конфигурации:", repr(APP_URL))
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import CommandStart
 from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
@@ -48,16 +49,17 @@ async def main():
     if not APP_URL.startswith("https://"):
         raise RuntimeError("Set APP_URL to the current HTTPS tunnel URL in .env")
     init_db()
-    session = AiohttpSession(proxy=TELEGRAM_PROXY or None)
+    session = AiohttpSession()
+    api = TelegramAPIServer.from_base(TELEGRAM_PROXY) if TELEGRAM_PROXY else None
     try:
-        async with Bot(BOT_TOKEN, session=session) as bot:
+        async with Bot(BOT_TOKEN, session=session, **({"api": api} if api else {})) as bot:
             # Polling cannot run while Telegram still has a webhook configured.
             try:
                 await bot.delete_webhook(drop_pending_updates=True)
             except TelegramNetworkError as exc:
                 raise RuntimeError(
-                    "Не удалось подключиться к api.telegram.org. "
-                    "Проверьте интернет/VPN или задайте TELEGRAM_PROXY в .env."
+                    "Не удалось подключиться к Telegram Bot API. "
+                    "Проверьте интернет или TELEGRAM_PROXY в .env."
                 ) from exc
             await dp.start_polling(bot)
     finally:
