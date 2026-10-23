@@ -49,10 +49,9 @@ async def main():
     if not APP_URL.startswith("https://"):
         raise RuntimeError("Set APP_URL to the current HTTPS tunnel URL in .env")
     init_db()
-    session = AiohttpSession()
-    api = TelegramAPIServer.from_base(TELEGRAM_PROXY) if TELEGRAM_PROXY else None
+    session = AiohttpSession(api = TelegramAPIServer.from_base(TELEGRAM_PROXY))
     try:
-        async with Bot(BOT_TOKEN, session=session, **({"api": api} if api else {})) as bot:
+        async with Bot(BOT_TOKEN, session=session) as bot:
             # Polling cannot run while Telegram still has a webhook configured.
             try:
                 await bot.delete_webhook(drop_pending_updates=True)
