@@ -50,6 +50,11 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'completed', result TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS treatment_suggestions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, doctor_telegram_id INTEGER NOT NULL,
+            patient_telegram_id INTEGER NOT NULL, question TEXT NOT NULL,
+            response TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         """)
         user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
         for name in ("first_name", "last_name", "username", "display_name"):

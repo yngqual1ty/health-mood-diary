@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from db import conn, init_db
 from auth import validate_init_data, AuthError
+import clinical_rag
 
 app = FastAPI(title="Mood Diary MVP")
 WEB_DIR = Path(__file__).parent / "web"
@@ -153,6 +154,11 @@ class PatientNameIn(BaseModel):
 
 class DoctorCreateIn(BaseModel):
     telegram_id: int = Field(gt=0)
+
+
+class TreatmentQueryIn(BaseModel):
+    question: str = Field(min_length=3, max_length=4000)
+    include_patient_data: bool = True
 
 
 def require_doctor(uid: int):
@@ -450,6 +456,69 @@ def doctor_patient_answers(
             }
         result.append(item)
     return {"items": result, "questionnaires": questionnaire_metadata}
+
+
+@app.get("/api/doctor/guidelines")
+def guidelines_status(authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_doctor(uid)
+    return clinical_rag.status()
+
+
+@app.post("/api/admin/guidelines/reload")
+def reload_guidelines(authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_admin_doctor(uid)
+    clinical_rag.get_index(reload=True)
+    return clinical_rag.status()
+
+
+@app.post("/api/doctor/patients/{patient_id}/treatment-options")
+def treatment_options(
+    patient_id: int,
+    body: TreatmentQueryIn,
+    authorization: str | None = Header(default=None),
+):
+    uid = current_user(authorization)
+    require_doctor(uid)
+    question = body.question.strip()
+    with conn() as db:
+        ensure_patient_link(db, uid, patient_id)
+        moods, answers = [], []
+        if body.include_patient_data:
+            moods = [dict(row) for row in db.execute(
+                """SELECT score, emotions, created_at FROM moods
+                   WHERE patient_telegram_id = ? ORDER BY id DESC LIMIT 60""",
+                (patient_id,),
+            ).fetchall()]
+            for row in db.execute(
+                """SELECT questionnaire_id, payload, status, result, created_at FROM answers
+                   WHERE patient_telegram_id = ? ORDER BY id DESC LIMIT 100""",
+                (patient_id,),
+            ).fetchall():
+                item = dict(row)
+                for key in ("payload", "result"):
+                    try:
+                        item[key] = json.loads(item[key] or "{}")
+                    except json.JSONDecodeError:
+                        item[key] = {}
+                answers.append(item)
+
+    patient = None
+    if body.include_patient_data:
+        patient = clinical_rag.summarize_patient(moods, answers, questionnaire_definitions())
+    try:
+        response = clinical_rag.propose_treatments(question, patient)
+    except clinical_rag.RagError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    with conn() as db:
+        db.execute(
+            """INSERT INTO treatment_suggestions(doctor_telegram_id, patient_telegram_id, question, response)
+               VALUES (?, ?, ?, ?)""",
+            (uid, patient_id, question, json.dumps(response, ensure_ascii=False)),
+        )
+    return response
 
 
 @app.post("/api/answers")

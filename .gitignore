@@ -14,5 +14,7 @@ __pycache__/
 *.db-shm
 *.db-wal
 
+guidelines/.cache/
+.idea
 .vscode/
 *.log

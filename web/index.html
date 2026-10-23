@@ -908,11 +908,23 @@ grid-template-columns: repeat(2, minmax(0, 1fr));
 
             <h2>Ответы на стартовые тесты</h2>
 
-            <div id="patientQuestionnaireReport">Загрузка…</div>
+            <div id="patientQuestionnaireReport">Загрузка…</div>
 
-        </div>
+        </div>
 
-    </div>
+        <div class="card">
+            <h2>Варианты лечения по клиническим рекомендациям</h2>
+            <div class="muted">Прототип поддержки решений для врача. Варианты строятся только по загруженным клиническим рекомендациям и требуют клинической проверки.</div>
+            <div id="guidelinesStatus" class="muted"></div>
+            <label for="treatmentQuestion">Клиническая ситуация и вопрос</label>
+            <textarea id="treatmentQuestion" rows="5" maxlength="4000" placeholder="Предварительный диагноз, длительность, сопутствующие заболевания, текущая терапия, противопоказания, предпочтения пациента. Например: депрессивный эпизод средней степени, 2 месяца, ранее не лечился, предпочитает избегать препаратов."></textarea>
+            <label class="chip"><input id="treatmentIncludePatient" type="checkbox" checked>Учитывать дневник и опросники пациента (обезличенно)</label>
+            <button class="full" id="treatmentSubmit" onclick="requestTreatmentOptions()">Подобрать альтернативы</button>
+            <div id="treatmentStatus" class="status"></div>
+            <div id="treatmentResult"></div>
+        </div>
+
+    </div>
 
 </section>
 
@@ -1684,6 +1696,7 @@ async function openPatient(patientId) {
 
 	list.classList.add('hidden');
 	details.classList.remove('hidden');
+	resetTreatmentOptions();
 	title.textContent = 'Загрузка данных пациента…';
 	moods.textContent = 'Загрузка записей…';
 	answers.textContent = 'Загрузка анкет…';
@@ -1955,6 +1968,117 @@ async function savePatientName() {
 		document.getElementById('patientNameStatus').textContent =
 			error.message || 'Не удалось сохранить имя.';
 	}
+}
+
+function el(tag, className, text) {
+	const node = document.createElement(tag);
+	if (className) node.className = className;
+	if (text !== undefined) node.textContent = text;
+	return node;
+}
+
+async function resetTreatmentOptions() {
+	document.getElementById('treatmentQuestion').value = '';
+	document.getElementById('treatmentStatus').textContent = '';
+	document.getElementById('treatmentResult').replaceChildren();
+	const status = document.getElementById('guidelinesStatus');
+	try {
+		const data = await api('/api/doctor/guidelines');
+		const docs = data.documents.map(doc => doc.title).join('; ') || 'нет документов';
+		status.textContent = `База: ${docs} · фрагментов: ${data.chunks} · `
+			+ (data.llm_configured ? `модель: ${data.model}` : 'LLM не настроена, только поиск фрагментов');
+	} catch (error) {
+		status.textContent = error.message || 'База рекомендаций недоступна.';
+	}
+}
+
+async function requestTreatmentOptions() {
+	const question = document.getElementById('treatmentQuestion').value.trim();
+	const status = document.getElementById('treatmentStatus');
+	const result = document.getElementById('treatmentResult');
+	const button = document.getElementById('treatmentSubmit');
+	if (question.length < 3 || currentPatientId === null) {
+		status.textContent = 'Опишите клиническую ситуацию.';
+		return;
+	}
+	status.textContent = 'Поиск по рекомендациям и формирование вариантов…';
+	result.replaceChildren();
+	button.disabled = true;
+	try {
+		const data = await api(`/api/doctor/patients/${currentPatientId}/treatment-options`, {
+			method: 'POST',
+			body: JSON.stringify({
+				question,
+				include_patient_data: document.getElementById('treatmentIncludePatient').checked
+			})
+		});
+		status.textContent = '';
+		renderTreatmentOptions(data, result);
+	} catch (error) {
+		status.textContent = error.message || 'Не удалось получить варианты.';
+	} finally {
+		button.disabled = false;
+	}
+}
+
+function renderTreatmentOptions(data, root) {
+	const list = (title, items) => {
+		if (!items?.length) return;
+		const box = el('div', 'entry');
+		box.appendChild(el('b', '', title));
+		const ul = el('ul');
+		items.forEach(item => ul.appendChild(el('li', '', item)));
+		box.appendChild(ul);
+		root.appendChild(box);
+	};
+
+	list('⚠️ Тревожные признаки', data.red_flags);
+	if (data.clinical_summary) {
+		const box = el('div', 'entry');
+		box.append(el('b', '', 'Резюме'), el('div', '', data.clinical_summary));
+		root.appendChild(box);
+	}
+
+	data.alternatives.forEach((alt, index) => {
+		const box = el('div', 'entry');
+		box.appendChild(el('b', '', `Вариант ${index + 1}: ${alt.title}`));
+		if (alt.approach) box.appendChild(el('div', 'muted', alt.approach));
+		if (!alt.grounded) {
+			box.appendChild(el('div', 'status', 'Нет ссылок на рекомендации — не опирайтесь на этот вариант без проверки.'));
+		}
+		[
+			['Обоснование', alt.rationale],
+			['Кому подходит', alt.suitable_when],
+			['Ограничения и риски', alt.cautions],
+			['Мониторинг', alt.monitoring],
+			['Уровень доказательности', alt.evidence]
+		].forEach(([label, value]) => {
+			if (!value) return;
+			const row = el('div');
+			row.append(el('strong', '', `${label}: `), document.createTextNode(value));
+			box.appendChild(row);
+		});
+		if (alt.citations.length) box.appendChild(el('div', 'muted', 'Источники: ' + alt.citations.join(', ')));
+		root.appendChild(box);
+	});
+
+	list('Что уточнить', data.missing_information);
+	list('Учтённые данные пациента', data.patient_context);
+
+	if (data.sources.length) {
+		const details = el('details', 'questionnaire-answers');
+		details.appendChild(el('summary', '', `Фрагменты рекомендаций (${data.sources.length})`));
+		data.sources.forEach(source => {
+			const row = el('div', 'questionnaire-answer');
+			row.append(
+				el('strong', '', `[${source.id}] ${source.document}${source.section ? ' — ' + source.section : ''}`),
+				el('div', '', source.text)
+			);
+			details.appendChild(row);
+		});
+		root.appendChild(details);
+	}
+	root.appendChild(el('div', 'muted', data.disclaimer));
 }
 
 initApp();
