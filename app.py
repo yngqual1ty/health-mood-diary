@@ -29,18 +29,31 @@ from db import (
     _utc_date,
     claim_panas_intro,
     release_panas_intro,
+    claim_hotline_notice,
+    release_hotline_notice,
 )
 from auth import validate_init_data, AuthError
 import clinical_rag
 
 log = logging.getLogger(__name__)
 STARTER_QUESTIONNAIRES = frozenset({"hads", "bai", "bdi"})
+ALERT_QUESTIONNAIRES = frozenset({"suicide-risk", "hads", "bdi"})
+# ОСР chart score is C-SSRS max 0–5 and cannot reach 18. Doctor alert uses
+# the sum of all nine item values (max 23). See questionnaires.json scoring.rules.
+OSR_SUM_THRESHOLD = 18
+HADS_D_THRESHOLD = 11
+BDI_THRESHOLD = 30
 PANAS_INTRO_TEXT = (
     "Следующая короткая шкала — ШПАНА\n\n"
     "Она помогает отметить, насколько в последнее время были выражены "
     "положительные и отрицательные переживания. Это не диагноз и не требует "
     "срочных действий.\n\n"
     "Заполните, когда будет удобно — обычно это занимает несколько минут."
+)
+HOTLINE_TEXT = (
+    "Если Вы чувствуете необходимость в экстренной помощи - телефон доверия • "
+    "ФГБУ «НМИЦ ПН им. В.П. Сербского» Минздрава России. "
+    "Горячая линия помощи. Круглосуточно 8 (495) 637-70-70"
 )
 
 app = FastAPI(title="Mood Diary MVP")
@@ -261,24 +274,17 @@ def _mini_app_url(path: str) -> str | None:
     return f"{app_url.rstrip('/')}/{path.strip('/')}/"
 
 
-def send_panas_intro(telegram_id: int) -> bool:
+def send_telegram_message(chat_id: int, text: str, reply_markup: dict | None = None) -> bool:
     url = _telegram_api_url("sendMessage")
-    web_app_url = _mini_app_url("panas")
-    if not url or not web_app_url:
+    if not url:
         return False
-    payload = {
-        "chat_id": telegram_id,
-        "text": PANAS_INTRO_TEXT,
-        "reply_markup": {
-            "inline_keyboard": [[
-                {"text": "Заполнить ШПАНА", "web_app": {"url": web_app_url}},
-            ]],
-        },
-    }
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     request = urllib.request.Request(
         url,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload, ensure_ascii=False).encode(),
+        headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
     try:
@@ -286,11 +292,26 @@ def send_panas_intro(telegram_id: int) -> bool:
             data = json.loads(response.read() or b"{}")
         return bool(isinstance(data, dict) and data.get("ok"))
     except urllib.error.HTTPError as exc:
-        log.warning("Telegram вернул %s при отправке ШПАНА %s", exc.code, telegram_id)
+        log.warning("Telegram вернул %s при отправке сообщения %s", exc.code, chat_id)
         return False
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
-        log.warning("Не удалось отправить ШПАНА %s", telegram_id)
+        log.warning("Не удалось отправить сообщение %s", chat_id)
         return False
+
+
+def send_panas_intro(telegram_id: int) -> bool:
+    web_app_url = _mini_app_url("panas")
+    if not web_app_url:
+        return False
+    return send_telegram_message(
+        telegram_id,
+        PANAS_INTRO_TEXT,
+        {
+            "inline_keyboard": [[
+                {"text": "Заполнить ШПАНА", "web_app": {"url": web_app_url}},
+            ]],
+        },
+    )
 
 
 def maybe_send_panas_intro(telegram_id: int) -> None:
@@ -302,6 +323,143 @@ def maybe_send_panas_intro(telegram_id: int) -> None:
         return
     if not send_panas_intro(telegram_id):
         release_panas_intro(telegram_id)
+
+
+def questionnaire_item_sum(definition, answers) -> int:
+    """Sum of numeric values for every item in the definition (not C-SSRS max)."""
+    values = {str(key): int(value) for key, value in answers.items() if str(value).lstrip("-").isdigit()}
+    return sum(
+        values[item["id"]]
+        for item in (definition or {}).get("items", [])
+        if item.get("id") in values
+    )
+
+
+def patient_display_label(user_row, telegram_id: int) -> str:
+    if not user_row:
+        return str(telegram_id)
+    name = (user_row["display_name"] or "").strip()
+    if not name:
+        name = " ".join(
+            part.strip()
+            for part in (user_row["first_name"] or "", user_row["last_name"] or "")
+            if part and part.strip()
+        )
+    return name or str(telegram_id)
+
+
+def doctor_alert_for_result(questionnaire_id: str, definition, answers, result):
+    """Doctor-alert payload if this completed result crosses the scale threshold.
+
+    HADS: domain D only (anxiety alone does not alert).
+    BDI: total score.
+    ОСР: sum of all item values, because stored/chart score is C-SSRS max 0–5.
+    """
+    if questionnaire_id == "suicide-risk":
+        score = questionnaire_item_sum(definition, answers)
+        if score >= OSR_SUM_THRESHOLD:
+            return {
+                "scale": "Оценка суицидального риска (ОСР)",
+                "score_line": (
+                    f"Балл: {score} (сумма пунктов; уведомление при "
+                    f"{OSR_SUM_THRESHOLD} и выше)"
+                ),
+            }
+        return None
+    if questionnaire_id == "hads":
+        domain = ((result or {}).get("domains") or {}).get("D") or {}
+        try:
+            score = int(domain.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        if score >= HADS_D_THRESHOLD:
+            interp = str(domain.get("interpretation") or "").strip()
+            extra = f" — {interp}" if interp else ""
+            return {
+                "scale": "HADS, подшкала депрессии (D)",
+                "score_line": f"Балл: {score}{extra}",
+            }
+        return None
+    if questionnaire_id == "bdi":
+        try:
+            score = int((result or {}).get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        if score >= BDI_THRESHOLD:
+            interp = str((result or {}).get("interpretation") or "").strip()
+            extra = f" — {interp}" if interp else ""
+            return {
+                "scale": "BDI (Бек)",
+                "score_line": f"Балл: {score}{extra}",
+            }
+        return None
+    return None
+
+
+def _doctor_alert_text(patient_label: str, alert: dict, stamp: str) -> str:
+    return (
+        f"Пациент: {patient_label}\n\n"
+        f"Шкала: {alert['scale']}\n"
+        f"{alert['score_line']}\n"
+        f"Время: {stamp}\n\n"
+        "Это сигнал по заполненной шкале, а не диагноз. "
+        "Пожалуйста, откройте карту пациента в Mini App."
+    )
+
+
+def send_doctor_scale_alert(doctor_id: int, patient_label: str, alert: dict, stamp: str) -> bool:
+    text = _doctor_alert_text(patient_label, alert, stamp)
+    doctor_url = _mini_app_url("doctor")
+    markup = None
+    if doctor_url:
+        markup = {
+            "inline_keyboard": [[
+                {"text": "Открыть карту пациента", "web_app": {"url": doctor_url}},
+            ]],
+        }
+    return send_telegram_message(doctor_id, text, markup)
+
+
+def maybe_notify_scale_alerts(patient_id: int, questionnaire_id: str, definition, answers, result) -> None:
+    """After a completed ОСР / HADS / BDI: doctor if threshold crossed, else patient hotline."""
+    if questionnaire_id not in ALERT_QUESTIONNAIRES:
+        return
+    with conn() as db:
+        user = db.execute(
+            """
+            SELECT role, display_name, first_name, last_name
+            FROM users WHERE telegram_id = ?
+            """,
+            (patient_id,),
+        ).fetchone()
+        link = db.execute(
+            "SELECT doctor_telegram_id FROM links WHERE patient_telegram_id = ?",
+            (patient_id,),
+        ).fetchone()
+    if not user or user["role"] == "doctor":
+        return
+    alert = doctor_alert_for_result(questionnaire_id, definition, answers, result)
+    if alert:
+        if not link:
+            return
+        if not _telegram_api_url("sendMessage"):
+            log.warning("Уведомление врачу: нет BOT_TOKEN, пропуск")
+            return
+        stamp = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")
+        send_doctor_scale_alert(
+            link["doctor_telegram_id"],
+            patient_display_label(user, patient_id),
+            alert,
+            stamp,
+        )
+        return
+    if not _telegram_api_url("sendMessage"):
+        log.warning("Горячая линия: нет BOT_TOKEN, пропуск")
+        return
+    if not claim_hotline_notice(patient_id, questionnaire_id):
+        return
+    if not send_telegram_message(patient_id, HOTLINE_TEXT):
+        release_hotline_notice(patient_id, questionnaire_id)
 
 
 @app.get("/api/me")
@@ -880,6 +1038,8 @@ def save_answers(body: AnswersIn, authorization: str | None = Header(default=Non
         )
     if body.questionnaire_id in STARTER_QUESTIONNAIRES and body.status == "completed":
         maybe_send_panas_intro(uid)
+    if body.status == "completed":
+        maybe_notify_scale_alerts(uid, body.questionnaire_id, definition, body.answers, result)
     return {"ok": True, "status": body.status, "result": result}
 
 

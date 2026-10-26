@@ -91,7 +91,7 @@ export function ResultsCharts({
       {moodRows.length > 0 && (
         <section className="card">
           <h2>Настроение</h2>
-          <p className={captionClass}>Оценка 1–5 за предыдущие дни.</p>
+          <p className={captionClass}>Оценка за предыдущие дни.</p>
           {lineChart(moodRows, [{ key: "score", color: "#087f79", name: "Настроение" }], variant)}
         </section>
       )}

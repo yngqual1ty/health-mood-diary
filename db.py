@@ -85,6 +85,12 @@ def init_db():
             patient_telegram_id INTEGER PRIMARY KEY,
             last_asked_date TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS hotline_prompts (
+            patient_telegram_id INTEGER NOT NULL,
+            questionnaire_id TEXT NOT NULL,
+            last_sent_date TEXT NOT NULL,
+            PRIMARY KEY (patient_telegram_id, questionnaire_id)
+        );
         """)
         user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
         for name in ("first_name", "last_name", "username", "display_name"):
@@ -331,6 +337,39 @@ def release_panas_intro(telegram_id):
         db.execute(
             "UPDATE users SET panas_intro_sent_at = NULL WHERE telegram_id = ?",
             (telegram_id,),
+        )
+
+
+def claim_hotline_notice(patient_telegram_id, questionnaire_id, now=None):
+    """True if this caller may send the patient hotline for this scale today (UTC)."""
+    today = _utc_date(now)
+    with conn() as db:
+        cursor = db.execute(
+            """
+            INSERT INTO hotline_prompts (patient_telegram_id, questionnaire_id, last_sent_date)
+            VALUES (?, ?, ?)
+            ON CONFLICT(patient_telegram_id, questionnaire_id) DO UPDATE SET
+                last_sent_date = excluded.last_sent_date
+            WHERE hotline_prompts.last_sent_date < excluded.last_sent_date
+            """,
+            (patient_telegram_id, questionnaire_id, today),
+        )
+        return cursor.rowcount == 1
+
+
+def release_hotline_notice(patient_telegram_id, questionnaire_id, now=None):
+    """Undo a failed claim so the hotline can be retried the same UTC day."""
+    today = _utc_date(now)
+    with conn() as db:
+        db.execute(
+            """
+            UPDATE hotline_prompts
+            SET last_sent_date = ''
+            WHERE patient_telegram_id = ?
+              AND questionnaire_id = ?
+              AND last_sent_date = ?
+            """,
+            (patient_telegram_id, questionnaire_id, today),
         )
 
 
