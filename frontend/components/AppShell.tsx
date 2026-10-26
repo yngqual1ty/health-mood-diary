@@ -4,8 +4,8 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { HelpTicker } from "@/components/HelpTicker";
-import { api } from "@/lib/api";
-import { initTelegram } from "@/lib/telegram";
+import { api, logoutSession } from "@/lib/api";
+import { hasTelegramInitData, initTelegram } from "@/lib/telegram";
 import type { Me } from "@/lib/types";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -13,9 +13,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState("");
+  const [inTelegram, setInTelegram] = useState(false);
+  const onLogin = pathname.startsWith("/login");
 
   useEffect(() => {
+    if (onLogin) return;
     initTelegram();
+    const telegram = hasTelegramInitData();
+    setInTelegram(telegram);
     api<Me>("/api/me")
       .then((user) => {
         setMe(user);
@@ -23,8 +28,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (user.role === "doctor" && !onDoctor) router.replace("/doctor/");
         if (user.role === "patient" && onDoctor) router.replace("/");
       })
-      .catch((err) => setError(err.message || "Не удалось проверить доступ. Откройте приложение через Telegram."));
-  }, [pathname, router]);
+      .catch((err) => {
+        if (!telegram) {
+          router.replace("/login/");
+          return;
+        }
+        setError(err.message || "Не удалось проверить доступ. Откройте приложение через Telegram.");
+      });
+  }, [pathname, router, onLogin]);
+
+  async function handleLogout() {
+    await logoutSession();
+    router.replace("/login/");
+  }
+
+  if (onLogin) {
+    return <>{children}</>;
+  }
 
   if (error) {
     return (
@@ -44,6 +64,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   const isDoctor = me.role === "doctor";
+  const webLk = isDoctor && !inTelegram;
   const tabs = [
     { href: "/doctor/", label: "Пациенты", id: "doctor" },
     ...(me.is_admin ? [{ href: "/admin/", label: "Врачи", id: "admin" }] : []),
@@ -51,9 +72,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <>
+      {webLk && (
+        <header className="web-lk-bar">
+          <span className="web-lk-title">Кабинет врача</span>
+          <nav className="web-lk-nav">
+            {tabs.map((tab) => {
+              const active = pathname.startsWith(tab.href);
+              return (
+                <Link key={tab.id} href={tab.href} className={active ? "active" : ""}>
+                  {tab.label}
+                </Link>
+              );
+            })}
+            <button type="button" className="secondary" onClick={handleLogout}>
+              Выйти
+            </button>
+          </nav>
+        </header>
+      )}
       {!isDoctor && <HelpTicker />}
-      <main className={isDoctor ? "app has-nav" : "app has-ticker"}>{children}</main>
-      {isDoctor && (
+      <main className={webLk ? "app web-lk" : isDoctor ? "app has-nav" : "app has-ticker"}>
+        {children}
+      </main>
+      {isDoctor && !webLk && (
         <nav className="nav" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>
           {tabs.map((tab) => {
             const active = pathname.startsWith(tab.href);

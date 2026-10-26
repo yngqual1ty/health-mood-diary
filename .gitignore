@@ -16,6 +16,9 @@ __pycache__/
 patient_documents/
 uploads/
 
+# Patient documents (default: <DATABASE_PATH parent>/docs)
+/docs/
+
 guidelines/.cache/
 .idea
 frontend/node_modules/

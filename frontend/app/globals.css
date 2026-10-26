@@ -42,6 +42,66 @@ a { color: inherit; text-decoration: none; }
   padding: max(20px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom));
 }
 
+.app.web-lk {
+  max-width: none;
+  width: 100%;
+  padding: 24px 32px 48px;
+}
+
+.web-lk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 32px;
+  background: rgba(247, 251, 251, 0.96);
+  border-bottom: 1px solid var(--line);
+}
+
+.web-lk-title {
+  font-weight: 700;
+  color: var(--teal-dark);
+}
+
+.web-lk-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.web-lk-nav a {
+  min-height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0 14px;
+  border-radius: 7px;
+  background: var(--soft-teal);
+  color: var(--teal-dark);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.web-lk-nav a.active {
+  background: var(--teal);
+  color: #fff;
+}
+
+.web-lk-nav button {
+  min-height: 40px;
+  padding: 8px 14px;
+}
+
+.login-page {
+  max-width: 480px;
+  padding-top: 72px;
+}
+
+.login-widget {
+  display: flex;
+  justify-content: center;
+  margin: 20px 0 8px;
+}
+
 .app.has-nav {
   padding-bottom: max(120px, calc(env(safe-area-inset-bottom) + 88px));
 }

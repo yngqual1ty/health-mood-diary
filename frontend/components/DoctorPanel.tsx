@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, displayName } from "@/lib/api";
-import type { Answer, DoctorPills, Mood, Patient, Questionnaire, ResultSeries, TreatmentResponse } from "@/lib/types";
+import { api, apiBlob, displayName } from "@/lib/api";
+import type { Answer, DoctorPills, Mood, Patient, PatientDocument, Questionnaire, ResultSeries, TreatmentResponse } from "@/lib/types";
 import { ResultsCharts } from "./ResultsCharts";
 
 export function DoctorPanel() {
@@ -11,6 +11,7 @@ export function DoctorPanel() {
   const [moods, setMoods] = useState<Mood[]>([]);
   const [answers, setAnswers] = useState<Answer[]>([]);
   const [pills, setPills] = useState<DoctorPills | null>(null);
+  const [documents, setDocuments] = useState<PatientDocument[]>([]);
   const [meta, setMeta] = useState<Record<string, Questionnaire>>({});
   const [invite, setInvite] = useState("");
   const [status, setStatus] = useState("");
@@ -34,19 +35,22 @@ export function DoctorPanel() {
     setName(displayName(patient));
     setTreatment(null);
     setPills(null);
+    setDocuments([]);
     setStatus("");
     try {
-      const [moodData, answerData, pillsData] = await Promise.all([
+      const [moodData, answerData, pillsData, docsData] = await Promise.all([
         api<{ items: Mood[] }>(`/api/doctor/patients/${patient.telegram_id}/moods`),
         api<{ items: Answer[]; questionnaires: Record<string, Questionnaire> }>(
           `/api/doctor/patients/${patient.telegram_id}/answers`,
         ),
         api<DoctorPills>(`/api/doctor/patients/${patient.telegram_id}/pills`),
+        api<{ items: PatientDocument[] }>(`/api/doctor/patients/${patient.telegram_id}/documents`),
       ]);
       setMoods(moodData.items);
       setAnswers(answerData.items);
       setMeta(answerData.questionnaires);
       setPills(pillsData);
+      setDocuments(docsData.items);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Не удалось загрузить пациента.");
     }
@@ -123,6 +127,11 @@ export function DoctorPanel() {
           <input id="patientName" value={name} onChange={(event) => setName(event.target.value)} />
           <button className="full" onClick={saveName}>Сохранить имя</button>
         </section>
+        <PatientDocuments
+          patientId={selected.telegram_id}
+          documents={documents}
+          onChange={setDocuments}
+        />
         <ResultsCharts variant="doctor" moods={pastMoods} series={series} />
         <PillsAdherence pills={pills} />
         <section className="card">
@@ -248,6 +257,91 @@ function lastUtcDays(count: number) {
     const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - index));
     return day.toISOString().slice(0, 10);
   });
+}
+
+function formatDocDate(value: string) {
+  const [day, time] = value.split(" ");
+  if (!day) return value;
+  const date = day.split("-").reverse().join(".");
+  return time ? `${date} ${time.slice(0, 5)}` : date;
+}
+
+function formatSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} Б`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 102.4) / 10} КБ`;
+  return `${Math.round(bytes / 104857.6) / 10} МБ`;
+}
+
+async function openPatientDocument(patientId: number, doc: PatientDocument, download: boolean) {
+  const blob = await apiBlob(`/api/doctor/patients/${patientId}/documents/${doc.id}`);
+  const url = URL.createObjectURL(blob);
+  if (download) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = doc.original_name || "document";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+function PatientDocuments({
+  patientId,
+  documents,
+  onChange,
+}: {
+  patientId: number;
+  documents: PatientDocument[];
+  onChange: (items: PatientDocument[]) => void;
+}) {
+  const [status, setStatus] = useState("");
+
+  async function open(doc: PatientDocument, download: boolean) {
+    try {
+      await openPatientDocument(patientId, doc, download);
+      setStatus("");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Не удалось открыть документ.");
+    }
+  }
+
+  async function remove(doc: PatientDocument) {
+    if (!confirm(`Удалить документ «${doc.original_name}»?`)) return;
+    try {
+      await api(`/api/doctor/patients/${patientId}/documents/${doc.id}`, { method: "DELETE" });
+      onChange(documents.filter((item) => item.id !== doc.id));
+      setStatus("Документ удалён.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Не удалось удалить документ.");
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>Документы</h2>
+      {!documents.length && (
+        <p className="muted">Документов пока нет. Пациент может отправить файл боту в Telegram.</p>
+      )}
+      {documents.map((doc) => (
+        <div className="entry" key={doc.id}>
+          <b>{doc.original_name || "Документ"}</b>
+          <div className="muted">
+            {formatDocDate(doc.created_at)}
+            {" · "}
+            {formatSize(doc.size)}
+          </div>
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="secondary" type="button" style={{ flex: 1 }} onClick={() => open(doc, false)}>Открыть</button>
+            <button className="secondary" type="button" style={{ flex: 1 }} onClick={() => open(doc, true)}>Скачать</button>
+            <button className="danger" type="button" style={{ flex: 1 }} onClick={() => remove(doc)}>Удалить</button>
+          </div>
+        </div>
+      ))}
+      {status && <div className="status">{status}</div>}
+    </section>
+  );
 }
 
 function PillsAdherence({ pills }: { pills: DoctorPills | null }) {

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -15,14 +16,8 @@ print("APP_URL из конфигурации:", repr(APP_URL))
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
-<<<<<<< HEAD
-from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
-from aiogram.filters import CommandStart
-from aiogram import F
-from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-from db import conn, init_db
-=======
 from aiogram.exceptions import (
+    TelegramAPIError,
     TelegramBadRequest,
     TelegramForbiddenError,
     TelegramNetworkError,
@@ -30,7 +25,13 @@ from aiogram.exceptions import (
 )
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+
+try:
+    from aiogram.enums import ContentType
+except ImportError:  # aiogram 2 fallback; this project uses aiogram 3
+    from aiogram.types import ContentType
 from db import (
+    conn,
     init_db,
     list_patients_due_for_reminder,
     mark_reminder_sent,
@@ -40,8 +41,13 @@ from db import (
     should_send_suicide_risk_intro,
     mark_suicide_risk_intro_sent,
     _utc_date,
+    DocumentError,
+    MAX_DOC_BYTES,
+    is_doctor,
+    is_linked_patient,
+    normalize_document_meta,
+    save_patient_document,
 )
->>>>>>> 2d85a3a549c2f97cf0b657dfa193a69c2cf8dd4f
 from app import consume_invite
 from medication_notifications import (
     confirm_medication_dose,
@@ -50,7 +56,6 @@ from medication_notifications import (
 
 log = logging.getLogger(__name__)
 dp = Dispatcher()
-logger = logging.getLogger(__name__)
 
 # Linked patients who already completed ОСР receive one HADS reminder every
 # REMINDER_INTERVAL_DAYS (default 14). The first send is due that many days
@@ -146,6 +151,7 @@ def pills_menu(day: str):
 # Daily mood is the Mini App page /mood/, not a Telegram inline keyboard and not PANAS.
 # First linked /start sends only ОСР. HADS/BAI/BDI go out after a completed ОСР in app.py.
 # ШПАНА stays one-time after the first HADS/BAI/BDI completion in app.py.
+# Pills-diary Mini App is one-time after a completed HADS in app.py (skipped if configured).
 
 
 async def send_suicide_risk_intro(message: Message, telegram_id: int) -> bool:
@@ -337,17 +343,18 @@ async def pills_callback(callback: CallbackQuery):
     await callback.answer("Записали")
 
 
-
 @dp.callback_query(F.data.startswith("med:"))
 async def confirm_medication(callback: CallbackQuery):
-    patient_id = callback.from_user.id
+    if callback.from_user is None:
+        await callback.answer("Не удалось определить пользователя.", show_alert=True)
+        return
     try:
         dose_id = int((callback.data or "").partition(":")[2])
     except ValueError:
         await callback.answer("Не удалось распознать приём.", show_alert=True)
         return
 
-    result = confirm_medication_dose(patient_id, dose_id)
+    result = confirm_medication_dose(callback.from_user.id, dose_id)
     if result == "taken":
         await callback.answer("Приём отмечен.")
         message = callback.message
@@ -358,13 +365,92 @@ async def confirm_medication(callback: CallbackQuery):
                     reply_markup=None,
                 )
             except TelegramAPIError:
-                logger.exception("Could not update confirmed medication message")
+                log.exception("Could not update confirmed medication message")
     elif result == "already_taken":
         await callback.answer("Этот приём уже отмечен.")
     else:
         await callback.answer(
             "Это назначение уже не активно.", show_alert=True
         )
+
+
+DOC_SAVED_TEXT = "Документ сохранён, врач увидит его в карте."
+DOC_NEED_INVITE_TEXT = (
+    "Чтобы отправлять документы, нужна ссылка-приглашение от врача."
+)
+DOC_ERROR_TEXT = {
+    "too_large": "Файл слишком большой. Можно отправить документ до 20 МБ.",
+    "forbidden": (
+        "Этот тип файла не принимается. "
+        "Можно отправить PDF, JPEG, PNG, WebP, DOC или DOCX."
+    ),
+    "empty": "Не удалось прочитать файл. Попробуйте ещё раз.",
+}
+
+
+def _file_from_message(message: Message):
+    if message.document:
+        doc = message.document
+        return (
+            doc.file_id,
+            doc.file_name or "document",
+            doc.mime_type,
+            doc.file_size or 0,
+        )
+    if message.photo:
+        photo = message.photo[-1]
+        return photo.file_id, "photo.jpg", "image/jpeg", photo.file_size or 0
+    return None
+
+
+async def _download_telegram_file(bot: Bot, file_id: str, declared_size: int) -> bytes:
+    if declared_size > MAX_DOC_BYTES:
+        raise DocumentError("too_large")
+    tg_file = await bot.get_file(file_id)
+    if tg_file.file_size and tg_file.file_size > MAX_DOC_BYTES:
+        raise DocumentError("too_large")
+    buffer = BytesIO()
+    await bot.download(tg_file, destination=buffer)
+    data = buffer.getvalue()
+    if not data:
+        raise DocumentError("empty")
+    if len(data) > MAX_DOC_BYTES:
+        raise DocumentError("too_large")
+    return data
+
+
+@dp.message(F.content_type.in_({ContentType.DOCUMENT, ContentType.PHOTO}))
+async def receive_patient_document(message: Message):
+    user = message.from_user
+    if user is None or message.chat.type != "private":
+        return
+    if is_doctor(user.id):
+        return
+    if not is_linked_patient(user.id):
+        await message.answer(DOC_NEED_INVITE_TEXT)
+        return
+    extracted = _file_from_message(message)
+    if extracted is None:
+        return
+    file_id, original_name, mime, declared_size = extracted
+    if not normalize_document_meta(original_name, mime):
+        await message.answer(DOC_ERROR_TEXT["forbidden"])
+        return
+    try:
+        data = await _download_telegram_file(message.bot, file_id, declared_size)
+        save_patient_document(user.id, file_id, original_name, mime, data)
+    except DocumentError as exc:
+        await message.answer(DOC_ERROR_TEXT.get(exc.code, DOC_ERROR_TEXT["empty"]))
+        return
+    except (TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError) as exc:
+        log.warning("Не удалось скачать документ %s: %s", user.id, exc)
+        await message.answer("Не удалось сохранить документ. Попробуйте ещё раз.")
+        return
+    except Exception:
+        log.exception("Ошибка сохранения документа %s", user.id)
+        await message.answer("Не удалось сохранить документ. Попробуйте ещё раз.")
+        return
+    await message.answer(DOC_SAVED_TEXT)
 
 
 async def main():
@@ -374,19 +460,12 @@ async def main():
         raise RuntimeError("Set APP_URL to the current HTTPS tunnel URL in .env")
     logging.basicConfig(level=logging.INFO)
     init_db()
-<<<<<<< HEAD
-    session = (
-        AiohttpSession(api=TelegramAPIServer.from_base(TELEGRAM_PROXY))
-        if TELEGRAM_PROXY
-        else AiohttpSession()
-    )
-=======
     # TELEGRAM_PROXY is a Bot API host (TelegramAPIServer.from_base), not an HTTP proxy.
     api_base = TELEGRAM_PROXY or "https://api.telegram.org"
     session = AiohttpSession(api=TelegramAPIServer.from_base(api_base))
     reminder_task = None
     pills_task = None
->>>>>>> 2d85a3a549c2f97cf0b657dfa193a69c2cf8dd4f
+    medication_task = None
     try:
         async with Bot(BOT_TOKEN, session=session) as bot:
             # Polling cannot run while Telegram still has a webhook configured.
@@ -397,20 +476,12 @@ async def main():
                     "Не удалось подключиться к Telegram Bot API. "
                     "Проверьте интернет или TELEGRAM_PROXY в .env."
                 ) from exc
-<<<<<<< HEAD
-            reminder_task = asyncio.create_task(medication_reminder_loop(bot))
-            try:
-                await dp.start_polling(bot)
-            finally:
-                reminder_task.cancel()
-                await asyncio.gather(reminder_task, return_exceptions=True)
-=======
             reminder_task = asyncio.create_task(reminder_loop(bot))
             pills_task = asyncio.create_task(pills_loop(bot))
+            medication_task = asyncio.create_task(medication_reminder_loop(bot))
             await dp.start_polling(bot)
->>>>>>> 2d85a3a549c2f97cf0b657dfa193a69c2cf8dd4f
     finally:
-        for task in (reminder_task, pills_task):
+        for task in (reminder_task, pills_task, medication_task):
             if task is not None:
                 task.cancel()
                 try:

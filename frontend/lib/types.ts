@@ -124,6 +124,14 @@ export type DoctorPills = PillsRegimen & {
   log: PillsLogEntry[];
 };
 
+export type PatientDocument = {
+  id: number;
+  original_name: string;
+  mime: string;
+  size: number;
+  created_at: string;
+};
+
 export type TreatmentAlternative = {
   title: string;
   approach: string;

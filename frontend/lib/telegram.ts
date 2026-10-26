@@ -15,6 +15,10 @@ export function telegramApp(): TelegramWebApp | undefined {
   return window.Telegram?.WebApp;
 }
 
+export function hasTelegramInitData(): boolean {
+  return Boolean(telegramApp()?.initData);
+}
+
 export function initTelegram() {
   const app = telegramApp();
   app?.ready();

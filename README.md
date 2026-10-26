@@ -14,6 +14,17 @@ Prototype mood diary: Telegram bot + Telegram Mini App + FastAPI + SQLite.
 7. Run the bot: `python bot.py`
 8. Configure the Mini App URL with BotFather. Doctors can invite patients from the app.
 
+## Doctor web cabinet
+Doctors can open the cabinet as a normal website at `$APP_URL/login/` (this deployment: https://bot.koni.moscow/login/), not only inside the Telegram Mini App.
+
+The Telegram Login Widget works only after the bot’s domain is registered in @BotFather:
+
+1. Open @BotFather.
+2. Send `/setdomain` (or Bot Settings → Domain).
+3. Set the domain to `bot.koni.moscow` — host only, no `https://` and no path.
+
+Patients cannot log in on the website; they use the diary in Telegram. Mini App requests still send `Authorization: tma <initData>` and the server still validates that hash. Website sessions use an HTTP-only cookie (`Path=/; Secure; SameSite=Lax`) or `Authorization: Bearer`.
+
 ## Docker
 1. Copy `.env.example` to `.env` and set `BOT_TOKEN`, `BOT_USERNAME`, `APP_URL`, and `ADMIN_DOCTOR_ID`.
 2. `APP_URL` must be the public HTTPS URL of this API (a tunnel or reverse proxy in front of port 8000). Telegram will not open an `http://` Mini App URL.

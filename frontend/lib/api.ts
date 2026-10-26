@@ -1,5 +1,7 @@
 import { telegramApp } from "./telegram";
 
+const SESSION_KEY = "session_token";
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -9,13 +11,38 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+export function sessionToken(): string {
+  if (typeof window === "undefined") return "";
+  return sessionStorage.getItem(SESSION_KEY) || "";
+}
+
+export function setSessionToken(token: string | null) {
+  if (typeof window === "undefined") return;
+  if (token) sessionStorage.setItem(SESSION_KEY, token);
+  else sessionStorage.removeItem(SESSION_KEY);
+}
+
+export function authHeaders(): HeadersInit {
   const initData = telegramApp()?.initData || "";
+  if (initData) return { Authorization: `tma ${initData}` };
+  const token = sessionToken();
+  if (token) return { Authorization: `Bearer ${token}` };
+  return {};
+}
+
+async function parseError(response: Response): Promise<ApiError> {
+  const data = await response.json().catch(() => ({}));
+  const detail = typeof data.detail === "string" ? data.detail : "Ошибка запроса";
+  return new ApiError(detail, response.status);
+}
+
+export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...options,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `tma ${initData}`,
+      ...authHeaders(),
       ...(options.headers || {}),
     },
   });
@@ -25,6 +52,31 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     throw new ApiError(detail, response.status);
   }
   return data as T;
+}
+
+export async function apiBlob(path: string): Promise<Blob> {
+  const response = await fetch(path, {
+    credentials: "include",
+    headers: {
+      ...authHeaders(),
+    },
+  });
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+  return response.blob();
+}
+
+export async function logoutSession(): Promise<void> {
+  await fetch("/api/auth/logout", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
+  }).catch(() => undefined);
+  setSessionToken(null);
 }
 
 export function displayName(user: {

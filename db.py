@@ -1,6 +1,8 @@
 import json
 import os
+import re
 import sqlite3
+import unicodedata
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,6 +12,45 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env", override=False)
 DB_PATH = os.getenv("DATABASE_PATH", str(BASE_DIR / "mood.sqlite3"))
 DB_PATH = str((BASE_DIR / DB_PATH).resolve()) if not os.path.isabs(DB_PATH) else DB_PATH
+_docs_env = os.getenv("DOCS_DIR", "").strip()
+if _docs_env:
+    DOCS_DIR = str(Path(_docs_env).resolve()) if os.path.isabs(_docs_env) else str((BASE_DIR / _docs_env).resolve())
+else:
+    DOCS_DIR = str(Path(DB_PATH).parent / "docs")
+
+MAX_DOC_BYTES = 20 * 1024 * 1024
+EXT_TO_MIME = {
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+MIME_TO_EXT = {
+    "application/pdf": ".pdf",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+}
+REJECT_EXT = {
+    ".exe", ".bat", ".cmd", ".com", ".cpl", ".dll", ".msi", ".scr", ".pif",
+    ".js", ".jse", ".vbs", ".vbe", ".ps1", ".sh", ".apk", ".bin", ".hta",
+    ".jar", ".dmg", ".app",
+}
+REJECT_MIME = {
+    "application/x-msdownload",
+    "application/x-executable",
+    "application/x-dosexec",
+    "application/vnd.microsoft.portable-executable",
+    "application/x-sh",
+    "application/javascript",
+    "text/javascript",
+}
 
 @contextmanager
 def conn():
@@ -32,13 +73,11 @@ def init_db():
             first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '',
             username TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-<<<<<<< HEAD
-            bot_chat_id INTEGER
-=======
             suicide_risk_intro_sent_at TEXT,
             starter_intro_sent_at TEXT,
-            panas_intro_sent_at TEXT
->>>>>>> 2d85a3a549c2f97cf0b657dfa193a69c2cf8dd4f
+            panas_intro_sent_at TEXT,
+            pills_intro_sent_at TEXT,
+            bot_chat_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS invites (
             token TEXT PRIMARY KEY, doctor_telegram_id INTEGER NOT NULL, used_by INTEGER,
@@ -59,54 +98,11 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'completed', result TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE TABLE IF NOT EXISTS medications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            doctor_telegram_id INTEGER NOT NULL,
-            patient_telegram_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            dosage TEXT NOT NULL,
-            schedule_times TEXT NOT NULL,
-            start_date TEXT NOT NULL,
-            end_date TEXT,
-            instructions TEXT NOT NULL DEFAULT '',
-            active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        CREATE TABLE IF NOT EXISTS treatment_suggestions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, doctor_telegram_id INTEGER NOT NULL,
+            patient_telegram_id INTEGER NOT NULL, question TEXT NOT NULL,
+            response TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
-<<<<<<< HEAD
-        CREATE TABLE IF NOT EXISTS medication_doses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            medication_id INTEGER NOT NULL,
-            patient_telegram_id INTEGER NOT NULL,
-            dose_date TEXT NOT NULL,
-            scheduled_time TEXT NOT NULL,
-            scheduled_at TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            notification_state TEXT NOT NULL DEFAULT 'pending',
-            notification_attempts INTEGER NOT NULL DEFAULT 0,
-            last_attempt_at TEXT,
-            notified_at TEXT,
-            taken_at TEXT,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(medication_id, dose_date, scheduled_time)
-        );
-        CREATE TABLE IF NOT EXISTS patient_documents (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            patient_telegram_id INTEGER NOT NULL,
-            doctor_telegram_id INTEGER NOT NULL,
-            uploaded_by_telegram_id INTEGER NOT NULL DEFAULT 0,
-            original_filename TEXT NOT NULL,
-            stored_filename TEXT NOT NULL UNIQUE,
-            content_type TEXT NOT NULL,
-            size_bytes INTEGER NOT NULL,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE INDEX IF NOT EXISTS idx_medications_patient
-            ON medications(patient_telegram_id, doctor_telegram_id, active);
-        CREATE INDEX IF NOT EXISTS idx_medication_doses_due
-            ON medication_doses(status, notification_state, scheduled_at);
-        CREATE INDEX IF NOT EXISTS idx_patient_documents_patient
-            ON patient_documents(patient_telegram_id, doctor_telegram_id, created_at);
-=======
         CREATE TABLE IF NOT EXISTS reminders (
             patient_telegram_id INTEGER PRIMARY KEY,
             last_sent_at TEXT NOT NULL
@@ -139,43 +135,74 @@ def init_db():
             last_sent_date TEXT NOT NULL,
             PRIMARY KEY (patient_telegram_id, questionnaire_id)
         );
->>>>>>> 2d85a3a549c2f97cf0b657dfa193a69c2cf8dd4f
+        CREATE TABLE IF NOT EXISTS patient_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_telegram_id INTEGER NOT NULL,
+            telegram_file_id TEXT NOT NULL DEFAULT '',
+            stored_name TEXT NOT NULL DEFAULT '',
+            original_name TEXT NOT NULL DEFAULT '',
+            mime TEXT NOT NULL DEFAULT '',
+            size INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_patient_documents_patient
+            ON patient_documents(patient_telegram_id);
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            telegram_id INTEGER NOT NULL,
+            expires TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_telegram
+            ON sessions(telegram_id);
+        CREATE TABLE IF NOT EXISTS medications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doctor_telegram_id INTEGER NOT NULL,
+            patient_telegram_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            dosage TEXT NOT NULL,
+            schedule_times TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT,
+            instructions TEXT NOT NULL DEFAULT '',
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS medication_doses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            medication_id INTEGER NOT NULL,
+            patient_telegram_id INTEGER NOT NULL,
+            dose_date TEXT NOT NULL,
+            scheduled_time TEXT NOT NULL,
+            scheduled_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            notification_state TEXT NOT NULL DEFAULT 'pending',
+            notification_attempts INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at TEXT,
+            notified_at TEXT,
+            taken_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(medication_id, dose_date, scheduled_time)
+        );
+        CREATE INDEX IF NOT EXISTS idx_medications_patient
+            ON medications(patient_telegram_id, doctor_telegram_id, active);
+        CREATE INDEX IF NOT EXISTS idx_medication_doses_due
+            ON medication_doses(status, notification_state, scheduled_at);
         """)
-        document_columns = {
-            row["name"] for row in db.execute("PRAGMA table_info(patient_documents)").fetchall()
-        }
-        if "uploaded_by_telegram_id" not in document_columns:
-            db.execute(
-                "ALTER TABLE patient_documents ADD COLUMN uploaded_by_telegram_id INTEGER NOT NULL DEFAULT 0"
-            )
-        db.execute(
-            """
-            UPDATE patient_documents
-            SET uploaded_by_telegram_id = doctor_telegram_id
-            WHERE uploaded_by_telegram_id = 0
-            """
-        )
-        db.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_patient_documents_uploader
-            ON patient_documents(patient_telegram_id, doctor_telegram_id, uploaded_by_telegram_id)
-            """
-        )
+        Path(DOCS_DIR).mkdir(parents=True, exist_ok=True)
         user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
         for name in ("first_name", "last_name", "username", "display_name"):
             if name not in user_columns:
                 db.execute(f"ALTER TABLE users ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
-<<<<<<< HEAD
-        if "bot_chat_id" not in user_columns:
-            db.execute("ALTER TABLE users ADD COLUMN bot_chat_id INTEGER")
-=======
         if "suicide_risk_intro_sent_at" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN suicide_risk_intro_sent_at TEXT")
         if "starter_intro_sent_at" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN starter_intro_sent_at TEXT")
         if "panas_intro_sent_at" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN panas_intro_sent_at TEXT")
->>>>>>> 2d85a3a549c2f97cf0b657dfa193a69c2cf8dd4f
+        if "pills_intro_sent_at" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN pills_intro_sent_at TEXT")
+        if "bot_chat_id" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN bot_chat_id INTEGER")
         invite_columns = {row["name"] for row in db.execute("PRAGMA table_info(invites)").fetchall()}
         if "expires_at" not in invite_columns:
             db.execute("ALTER TABLE invites ADD COLUMN expires_at TEXT")
@@ -472,6 +499,44 @@ def release_panas_intro(telegram_id):
         )
 
 
+def claim_pills_intro(telegram_id, sent_at=None):
+    """True if this caller may send the one-time pills-diary Mini App prompt."""
+    stamp = _utc_stamp(sent_at)
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        cursor = db.execute(
+            """
+            UPDATE users SET pills_intro_sent_at = ?
+            WHERE telegram_id = ?
+              AND COALESCE(role, 'patient') = 'patient'
+              AND pills_intro_sent_at IS NULL
+              AND EXISTS (
+                SELECT 1 FROM answers
+                WHERE patient_telegram_id = users.telegram_id
+                  AND questionnaire_id = 'hads'
+                  AND COALESCE(status, 'completed') = 'completed'
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM regimen
+                WHERE patient_telegram_id = users.telegram_id
+              )
+            """,
+            (stamp, telegram_id),
+        )
+        return cursor.rowcount == 1
+
+
+def release_pills_intro(telegram_id):
+    with conn() as db:
+        db.execute(
+            "UPDATE users SET pills_intro_sent_at = NULL WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+
+
 def claim_hotline_notice(patient_telegram_id, questionnaire_id, now=None):
     """True if this caller may send the patient hotline for this scale today (UTC)."""
     today = _utc_date(now)
@@ -590,3 +655,209 @@ def mark_mood_prompt_sent(patient_telegram_id, asked_date=None):
             """,
             (patient_telegram_id, day),
         )
+
+
+class DocumentError(ValueError):
+    """Patient file rejected or could not be stored. `.code` is a stable reason."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+def is_linked_patient(telegram_id):
+    if is_doctor(telegram_id):
+        return False
+    with conn() as db:
+        row = db.execute(
+            "SELECT 1 FROM links WHERE patient_telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+    return bool(row)
+
+
+def sanitize_filename(name: str, default: str = "document") -> str:
+    name = (name or "").replace("\x00", "").replace("\\", "/").split("/")[-1]
+    name = unicodedata.normalize("NFKC", name)
+    name = re.sub(r"[^\w.\- ]+", "_", name, flags=re.UNICODE)
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    if not name or name in {".", ".."}:
+        name = default
+    stem, ext = os.path.splitext(name)
+    stem = (stem or default)[:80]
+    ext = ext[:10].lower()
+    return f"{stem}{ext}"
+
+
+def _looks_executable(data: bytes) -> bool:
+    if data.startswith(b"MZ") or data.startswith(b"\x7fELF") or data.startswith(b"#!"):
+        return True
+    if data.startswith(b"\xca\xfe\xba\xbe") or data.startswith(b"\xce\xfa\xed\xfe"):
+        return True
+    return False
+
+
+def normalize_document_meta(original_name: str, mime: str | None):
+    """Return (safe_name, mime) if the file type is allowed, otherwise None."""
+    name = (original_name or "").replace("\\", "/").split("/")[-1].replace("\x00", "")
+    ext = Path(name).suffix.lower()
+    mime_n = (mime or "").split(";")[0].strip().lower()
+    if ext in REJECT_EXT or mime_n in REJECT_MIME:
+        return None
+    if ext in EXT_TO_MIME:
+        out_mime = mime_n if mime_n in MIME_TO_EXT else EXT_TO_MIME[ext]
+        if out_mime == "image/jpg":
+            out_mime = "image/jpeg"
+        return sanitize_filename(name or f"document{ext}"), out_mime
+    if mime_n in MIME_TO_EXT:
+        guessed_ext = MIME_TO_EXT[mime_n]
+        out_mime = "image/jpeg" if mime_n == "image/jpg" else mime_n
+        stem = Path(name).stem if name else "document"
+        return sanitize_filename(f"{stem}{guessed_ext}"), out_mime
+    return None
+
+
+def _document_path(patient_telegram_id, stored_name: str) -> Path | None:
+    if not stored_name or Path(stored_name).name != stored_name:
+        return None
+    base = Path(DOCS_DIR).resolve()
+    path = (base / str(int(patient_telegram_id)) / stored_name).resolve()
+    try:
+        path.relative_to(base)
+    except ValueError:
+        return None
+    return path
+
+
+def save_patient_document(patient_telegram_id, telegram_file_id, original_name, mime, data: bytes):
+    if not data:
+        raise DocumentError("empty")
+    if len(data) > MAX_DOC_BYTES:
+        raise DocumentError("too_large")
+    if _looks_executable(data):
+        raise DocumentError("forbidden")
+    meta = normalize_document_meta(original_name, mime)
+    if not meta:
+        raise DocumentError("forbidden")
+    safe_name, out_mime = meta
+    display_name = Path(original_name or "").name.strip() or safe_name
+    display_name = display_name.replace("\x00", "")[:180]
+    patient_dir = Path(DOCS_DIR) / str(int(patient_telegram_id))
+    patient_dir.mkdir(parents=True, exist_ok=True)
+    dest = None
+    with conn() as db:
+        cursor = db.execute(
+            """
+            INSERT INTO patient_documents (
+                patient_telegram_id, telegram_file_id, stored_name,
+                original_name, mime, size
+            ) VALUES (?, ?, '', ?, ?, ?)
+            """,
+            (
+                int(patient_telegram_id),
+                telegram_file_id or "",
+                display_name,
+                out_mime,
+                len(data),
+            ),
+        )
+        doc_id = cursor.lastrowid
+        stored_name = f"{doc_id}_{safe_name}"
+        dest = patient_dir / stored_name
+        try:
+            dest.write_bytes(data)
+            db.execute(
+                "UPDATE patient_documents SET stored_name = ? WHERE id = ?",
+                (stored_name, doc_id),
+            )
+        except Exception:
+            if dest is not None:
+                dest.unlink(missing_ok=True)
+            raise
+    return get_patient_document(patient_telegram_id, doc_id)
+
+
+def list_patient_documents(patient_telegram_id):
+    with conn() as db:
+        rows = db.execute(
+            """
+            SELECT id, original_name, mime, size, created_at
+            FROM patient_documents
+            WHERE patient_telegram_id = ?
+            ORDER BY id DESC
+            """,
+            (int(patient_telegram_id),),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_patient_document(patient_telegram_id, doc_id):
+    with conn() as db:
+        row = db.execute(
+            """
+            SELECT id, patient_telegram_id, telegram_file_id, stored_name,
+                   original_name, mime, size, created_at
+            FROM patient_documents
+            WHERE id = ? AND patient_telegram_id = ?
+            """,
+            (int(doc_id), int(patient_telegram_id)),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def patient_document_file(patient_telegram_id, doc_id):
+    row = get_patient_document(patient_telegram_id, doc_id)
+    if not row:
+        return None
+    path = _document_path(patient_telegram_id, row.get("stored_name") or "")
+    if path is None or not path.is_file():
+        return None
+    return row, path
+
+
+def delete_patient_document(patient_telegram_id, doc_id):
+    row = get_patient_document(patient_telegram_id, doc_id)
+    if not row:
+        return False
+    path = _document_path(patient_telegram_id, row.get("stored_name") or "")
+    with conn() as db:
+        deleted = db.execute(
+            "DELETE FROM patient_documents WHERE id = ? AND patient_telegram_id = ?",
+            (int(doc_id), int(patient_telegram_id)),
+        ).rowcount
+    if path is not None:
+        path.unlink(missing_ok=True)
+    return deleted == 1
+
+
+def create_session(token, telegram_id, expires):
+    now = _utc_stamp()
+    with conn() as db:
+        db.execute("DELETE FROM sessions WHERE expires <= ?", (now,))
+        db.execute(
+            "INSERT INTO sessions (token, telegram_id, expires) VALUES (?, ?, ?)",
+            (token, int(telegram_id), expires),
+        )
+
+
+def session_telegram_id(token):
+    if not token:
+        return None
+    with conn() as db:
+        row = db.execute(
+            "SELECT telegram_id FROM sessions WHERE token = ? AND expires > ?",
+            (token, _utc_stamp()),
+        ).fetchone()
+    return int(row["telegram_id"]) if row else None
+
+
+def delete_session(token):
+    if not token:
+        return
+    with conn() as db:
+        db.execute("DELETE FROM sessions WHERE token = ?", (token,))
+
+
+def delete_sessions_for_user(telegram_id):
+    with conn() as db:
+        db.execute("DELETE FROM sessions WHERE telegram_id = ?", (int(telegram_id),))

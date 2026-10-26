@@ -2,24 +2,18 @@ import json
 import logging
 import os
 import secrets
-<<<<<<< HEAD
-import sqlite3
-from datetime import date, datetime, timedelta
-=======
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
->>>>>>> 2d85a3a549c2f97cf0b657dfa193a69c2cf8dd4f
+from contextvars import ContextVar
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.parse import unquote
-from uuid import uuid4
 
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env", override=False)
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,14 +30,24 @@ from db import (
     _utc_date,
     claim_panas_intro,
     release_panas_intro,
+    claim_pills_intro,
+    release_pills_intro,
     claim_scales_intro,
     release_scales_intro,
     claim_hotline_notice,
     release_hotline_notice,
     has_completed_suicide_risk,
+    delete_patient_document,
+    list_patient_documents,
+    patient_document_file,
+    create_session,
+    session_telegram_id,
+    delete_session,
+    delete_sessions_for_user,
 )
-from auth import validate_init_data, AuthError
+from auth import validate_init_data, validate_login_widget, AuthError
 from medication_notifications import APP_TIMEZONE
+import clinical_rag
 
 log = logging.getLogger(__name__)
 STARTER_QUESTIONNAIRES = frozenset({"hads", "bai", "bdi"})
@@ -80,6 +84,12 @@ PANAS_INTRO_TEXT = (
     "срочных действий.\n\n"
     "Заполните, когда будет удобно — обычно это занимает несколько минут."
 )
+PILLS_INTRO_TEXT = (
+    "Дневник таблеток\n\n"
+    "Если вы принимаете лекарства, укажите схему один раз. "
+    "Ежедневные отметки придут сообщением от бота.\n\n"
+    "Это не медицинская рекомендация. Заполните, когда будет удобно."
+)
 HOTLINE_TEXT = (
     "Если Вы чувствуете необходимость в экстренной помощи - телефон доверия • "
     "ФГБУ «НМИЦ ПН им. В.П. Сербского» Минздрава России. "
@@ -89,25 +99,16 @@ HOTLINE_TEXT = (
 app = FastAPI(title="Mood Diary MVP")
 FRONTEND_DIR = BASE_DIR / "frontend" / "out"
 INVITE_TTL_HOURS = 24
+SESSION_TTL_DAYS = 7
+SESSION_COOKIE = "session"
 ADMIN_DOCTOR_ID = int(os.getenv("ADMIN_DOCTOR_ID", "0"))
 DEV_TELEGRAM_ID = int(os.getenv("DEV_TELEGRAM_ID", "0"))
 QUESTIONNAIRES_PATH = BASE_DIR / "questionnaires.json"
-DOCUMENTS_DIR = Path(
-    os.getenv("PATIENT_DOCUMENTS_DIR", str(BASE_DIR / "patient_documents"))
+WEB_LK_PATIENT_MESSAGE = (
+    "Веб-кабинет предназначен только для врачей. "
+    "Пациентам доступен дневник в приложении Telegram."
 )
-if not DOCUMENTS_DIR.is_absolute():
-    DOCUMENTS_DIR = BASE_DIR / DOCUMENTS_DIR
-MAX_DOCUMENT_SIZE = 10 * 1024 * 1024
-DOCUMENT_FORMATS = {
-    ".pdf": ("application/pdf", lambda content: content.startswith(b"%PDF-")),
-    ".jpg": ("image/jpeg", lambda content: content.startswith(b"\xff\xd8\xff")),
-    ".jpeg": ("image/jpeg", lambda content: content.startswith(b"\xff\xd8\xff")),
-    ".png": (
-        "image/png",
-        lambda content: content.startswith(b"\x89PNG\r\n\x1a\n"),
-    ),
-}
-logger = logging.getLogger(__name__)
+_session_cookie: ContextVar[str | None] = ContextVar("session_cookie", default=None)
 
 
 def questionnaire_definitions():
@@ -171,6 +172,15 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def bind_session_cookie(request: Request, call_next):
+    token = _session_cookie.set(request.cookies.get(SESSION_COOKIE))
+    try:
+        return await call_next(request)
+    finally:
+        _session_cookie.reset(token)
+
+
 @app.on_event("startup")
 def startup():
     init_db()
@@ -186,32 +196,10 @@ def startup():
             )
 
 
-def current_user(authorization: str | None):
-    raw = (
-        authorization[4:]
-        if authorization and authorization.lower().startswith("tma ")
-        else ""
-    )
-    if not raw.strip() and DEV_TELEGRAM_ID > 0:
-        with conn() as db:
-            db.execute(
-                "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
-                (DEV_TELEGRAM_ID,),
-            )
-        return DEV_TELEGRAM_ID
-    try:
-        data = validate_init_data(raw)
-    except AuthError as e:
-        raise HTTPException(status_code=401, detail=str(e)) from e
-
-    uid = data["telegram_id"]
-    telegram_user = data.get("user", {})
+def _upsert_telegram_profile(uid: int, first_name: str, last_name: str, username: str):
     default_name = " ".join(
         part.strip()
-        for part in (
-            telegram_user.get("first_name", ""),
-            telegram_user.get("last_name", ""),
-        )
+        for part in (first_name, last_name)
         if part and part.strip()
     )
     with conn() as db:
@@ -228,15 +216,91 @@ def current_user(authorization: str | None):
                     ELSE users.display_name
                 END
             """,
-            (
+            (uid, first_name, last_name, username, default_name),
+        )
+
+
+def _session_uid(token: str | None) -> int | None:
+    if not token or not token.strip():
+        return None
+    return session_telegram_id(token.strip())
+
+
+def current_user(authorization: str | None):
+    if authorization and authorization.lower().startswith("tma "):
+        raw = authorization[4:].strip()
+        if raw:
+            try:
+                data = validate_init_data(raw)
+            except AuthError as e:
+                raise HTTPException(status_code=401, detail=str(e)) from e
+            uid = data["telegram_id"]
+            telegram_user = data.get("user", {})
+            _upsert_telegram_profile(
                 uid,
                 telegram_user.get("first_name", ""),
                 telegram_user.get("last_name", ""),
                 telegram_user.get("username", ""),
-                default_name,
-            ),
-        )
-    return uid
+            )
+            return uid
+    if authorization and authorization.lower().startswith("bearer "):
+        uid = _session_uid(authorization[7:])
+        if uid:
+            return uid
+        raise HTTPException(status_code=401, detail="Сессия недействительна или истекла.")
+    uid = _session_uid(_session_cookie.get())
+    if uid:
+        return uid
+    if DEV_TELEGRAM_ID > 0:
+        with conn() as db:
+            db.execute(
+                "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+                (DEV_TELEGRAM_ID,),
+            )
+        return DEV_TELEGRAM_ID
+    raise HTTPException(status_code=401, detail="Missing Telegram initData")
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=token,
+        max_age=SESSION_TTL_DAYS * 24 * 3600,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=SESSION_COOKIE,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _issue_session(uid: int, response: Response) -> dict:
+    token = secrets.token_urlsafe(32)
+    expires = (datetime.utcnow() + timedelta(days=SESSION_TTL_DAYS)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    create_session(token, uid, expires)
+    _set_session_cookie(response, token)
+    return {"ok": True, "token": token, "expires": expires, "telegram_id": uid}
+
+
+class TelegramLoginIn(BaseModel):
+    id: int
+    first_name: str = ""
+    last_name: str = ""
+    username: str = ""
+    photo_url: str = ""
+    auth_date: int | str
+    hash: str
 
 
 class MoodIn(BaseModel):
@@ -268,7 +332,28 @@ class MedicationIn(BaseModel):
     instructions: str = Field(default="", max_length=1000)
 
 
-<<<<<<< HEAD
+class TreatmentQueryIn(BaseModel):
+    question: str = Field(min_length=3, max_length=4000)
+    include_patient_data: bool = True
+
+
+class PillItemIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    time: str = Field(default="", max_length=40)
+    note: str = Field(default="", max_length=200)
+
+
+class PillsRegimenIn(BaseModel):
+    items: list[PillItemIn] = Field(min_length=1, max_length=20)
+    confirm: bool = False
+
+
+class PillsLogIn(BaseModel):
+    taken: str = Field(pattern="^(yes|no|partial)$")
+    note: str = Field(default="", max_length=200)
+    date: str | None = None
+
+
 def normalized_medication_times(times: list[str]) -> list[str]:
     normalized = sorted(set(value.strip() for value in times))
     if len(normalized) != len(times):
@@ -290,24 +375,7 @@ def normalized_medication_times(times: list[str]) -> list[str]:
             detail="Укажите время приёма в формате ЧЧ:ММ.",
         )
     return normalized
-=======
-class PillItemIn(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    time: str = Field(default="", max_length=40)
-    note: str = Field(default="", max_length=200)
 
-
-class PillsRegimenIn(BaseModel):
-    items: list[PillItemIn] = Field(min_length=1, max_length=20)
-    confirm: bool = False
-
-
-class PillsLogIn(BaseModel):
-    taken: str = Field(pattern="^(yes|no|partial)$")
-    note: str = Field(default="", max_length=200)
-    date: str | None = None
-
->>>>>>> 2d85a3a549c2f97cf0b657dfa193a69c2cf8dd4f
 
 def require_doctor(uid: int):
     with conn() as db:
@@ -397,6 +465,32 @@ def maybe_send_panas_intro(telegram_id: int) -> None:
         return
     if not send_panas_intro(telegram_id):
         release_panas_intro(telegram_id)
+
+
+def send_pills_intro(telegram_id: int) -> bool:
+    web_app_url = _mini_app_url("pills-diary")
+    if not web_app_url:
+        return False
+    return send_telegram_message(
+        telegram_id,
+        PILLS_INTRO_TEXT,
+        {
+            "inline_keyboard": [[
+                {"text": "Указать лекарства", "web_app": {"url": web_app_url}},
+            ]],
+        },
+    )
+
+
+def maybe_send_pills_intro(telegram_id: int) -> None:
+    """One-time pills-diary Mini App after a completed HADS. Skipped if a regimen exists."""
+    if not _telegram_api_url("sendMessage") or not _mini_app_url("pills-diary"):
+        log.warning("Дневник таблеток: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
+        return
+    if not claim_pills_intro(telegram_id):
+        return
+    if not send_pills_intro(telegram_id):
+        release_pills_intro(telegram_id)
 
 
 def send_scales_intro(telegram_id: int) -> bool:
@@ -563,6 +657,59 @@ def maybe_notify_scale_alerts(patient_id: int, questionnaire_id: str, definition
         return
     if not send_telegram_message(patient_id, HOTLINE_TEXT):
         release_hotline_notice(patient_id, questionnaire_id)
+
+
+@app.get("/api/auth/config")
+def auth_config():
+    return {"bot_username": os.getenv("BOT_USERNAME", "").lstrip("@")}
+
+
+@app.post("/api/auth/telegram")
+def auth_telegram(body: TelegramLoginIn, response: Response):
+    try:
+        data = validate_login_widget(body.model_dump())
+    except AuthError as e:
+        raise HTTPException(status_code=401, detail=str(e)) from e
+    uid = data["telegram_id"]
+    with conn() as db:
+        user = db.execute(
+            "SELECT role FROM users WHERE telegram_id = ?", (uid,)
+        ).fetchone()
+    is_admin = uid == ADMIN_DOCTOR_ID
+    if not is_admin and (not user or user["role"] != "doctor"):
+        raise HTTPException(status_code=403, detail=WEB_LK_PATIENT_MESSAGE)
+    _upsert_telegram_profile(
+        uid,
+        data.get("first_name", ""),
+        data.get("last_name", ""),
+        data.get("username", ""),
+    )
+    if is_admin:
+        with conn() as db:
+            db.execute(
+                """
+                INSERT INTO users (telegram_id, role)
+                VALUES (?, 'doctor')
+                ON CONFLICT(telegram_id) DO UPDATE SET role = 'doctor'
+                """,
+                (uid,),
+            )
+    return _issue_session(uid, response)
+
+
+@app.post("/api/auth/logout")
+def auth_logout(
+    response: Response,
+    authorization: str | None = Header(default=None),
+):
+    token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    if not token:
+        token = _session_cookie.get()
+    delete_session(token)
+    _clear_session_cookie(response)
+    return {"ok": True}
 
 
 @app.get("/api/me")
@@ -924,6 +1071,7 @@ def delete_doctor(
         if changed != 1:
             raise HTTPException(status_code=404, detail="Врач не найден.")
         db.execute("DELETE FROM links WHERE doctor_telegram_id = ?", (doctor_id,))
+    delete_sessions_for_user(doctor_id)
     return {"ok": True}
 
 
@@ -974,6 +1122,49 @@ def unlink_patient(
             (uid, patient_id),
         )
     return {"ok": True, "data_preserved": True}
+
+
+@app.get("/api/doctor/patients/{patient_id}/documents")
+def doctor_patient_documents(
+    patient_id: int, authorization: str | None = Header(default=None)
+):
+    uid = current_user(authorization)
+    require_doctor(uid)
+    with conn() as db:
+        ensure_patient_link(db, uid, patient_id)
+    return {"items": list_patient_documents(patient_id)}
+
+
+@app.get("/api/doctor/patients/{patient_id}/documents/{doc_id}")
+def doctor_patient_document_file(
+    patient_id: int, doc_id: int, authorization: str | None = Header(default=None)
+):
+    uid = current_user(authorization)
+    require_doctor(uid)
+    with conn() as db:
+        ensure_patient_link(db, uid, patient_id)
+    found = patient_document_file(patient_id, doc_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Документ не найден.")
+    row, path = found
+    return FileResponse(
+        path,
+        media_type=row.get("mime") or "application/octet-stream",
+        filename=row.get("original_name") or path.name,
+    )
+
+
+@app.delete("/api/doctor/patients/{patient_id}/documents/{doc_id}")
+def doctor_delete_patient_document(
+    patient_id: int, doc_id: int, authorization: str | None = Header(default=None)
+):
+    uid = current_user(authorization)
+    require_doctor(uid)
+    with conn() as db:
+        ensure_patient_link(db, uid, patient_id)
+    if not delete_patient_document(patient_id, doc_id):
+        raise HTTPException(status_code=404, detail="Документ не найден.")
+    return {"ok": True}
 
 
 @app.get("/api/doctor/patients/{patient_id}/moods")
@@ -1184,265 +1375,67 @@ def stop_patient_medication(
     return {"ok": True}
 
 
-def linked_doctor_for_patient(db, patient_id: int) -> int:
-    link = db.execute(
-        "SELECT doctor_telegram_id FROM links WHERE patient_telegram_id = ?",
-        (patient_id,),
-    ).fetchone()
-    if not link:
-        raise HTTPException(status_code=404, detail="Пациент не привязан к врачу.")
-    return link["doctor_telegram_id"]
+@app.get("/api/doctor/guidelines")
+def guidelines_status(authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_doctor(uid)
+    return clinical_rag.status()
 
 
-def document_rows(db, doctor_id: int, patient_id: int, viewer_id: int):
-    return db.execute(
-        """
-        SELECT id, original_filename, content_type, size_bytes, created_at,
-               CASE WHEN uploaded_by_telegram_id = ? THEN 1 ELSE 0 END AS can_delete,
-               CASE WHEN uploaded_by_telegram_id = patient_telegram_id
-                    THEN 'patient' ELSE 'doctor' END AS uploader_role
-        FROM patient_documents
-        WHERE doctor_telegram_id = ? AND patient_telegram_id = ?
-        ORDER BY id DESC LIMIT 100
-        """,
-        (viewer_id, doctor_id, patient_id),
-    ).fetchall()
+@app.post("/api/admin/guidelines/reload")
+def reload_guidelines(authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_admin_doctor(uid)
+    clinical_rag.get_index(reload=True)
+    return clinical_rag.status()
 
 
-async def store_patient_document(
+@app.post("/api/doctor/patients/{patient_id}/treatment-options")
+def treatment_options(
     patient_id: int,
-    doctor_id: int,
-    uploader_id: int,
-    request: Request,
-    filename: str,
+    body: TreatmentQueryIn,
+    authorization: str | None = Header(default=None),
 ):
-    filename = unquote(filename)
-    extension = Path(filename.replace("\\", "/")).suffix.lower()
-    file_format = DOCUMENT_FORMATS.get(extension)
-    if not file_format:
-        raise HTTPException(
-            status_code=415, detail="Разрешены только PDF, JPG и PNG."
+    uid = current_user(authorization)
+    require_doctor(uid)
+    question = body.question.strip()
+    with conn() as db:
+        ensure_patient_link(db, uid, patient_id)
+        moods, answers = [], []
+        if body.include_patient_data:
+            moods = [dict(row) for row in db.execute(
+                """SELECT score, emotions, created_at FROM moods
+                   WHERE patient_telegram_id = ? ORDER BY id DESC LIMIT 60""",
+                (patient_id,),
+            ).fetchall()]
+            for row in db.execute(
+                """SELECT questionnaire_id, payload, status, result, created_at FROM answers
+                   WHERE patient_telegram_id = ? ORDER BY id DESC LIMIT 100""",
+                (patient_id,),
+            ).fetchall():
+                item = dict(row)
+                for key in ("payload", "result"):
+                    try:
+                        item[key] = json.loads(item[key] or "{}")
+                    except json.JSONDecodeError:
+                        item[key] = {}
+                answers.append(item)
+
+    patient = None
+    if body.include_patient_data:
+        patient = clinical_rag.summarize_patient(moods, answers, questionnaire_definitions())
+    try:
+        response = clinical_rag.propose_treatments(question, patient)
+    except clinical_rag.RagError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    with conn() as db:
+        db.execute(
+            """INSERT INTO treatment_suggestions(doctor_telegram_id, patient_telegram_id, question, response)
+               VALUES (?, ?, ?, ?)""",
+            (uid, patient_id, question, json.dumps(response, ensure_ascii=False)),
         )
-    content_type, signature_check = file_format
-    content = bytearray()
-    async for chunk in request.stream():
-        content.extend(chunk)
-        if len(content) > MAX_DOCUMENT_SIZE:
-            raise HTTPException(status_code=413, detail="Размер файла не должен превышать 10 МБ.")
-    if not signature_check(content):
-        raise HTTPException(status_code=415, detail="Содержимое файла не соответствует формату.")
-
-    original_filename = Path(filename.replace("\\", "/")).name
-    original_filename = "".join(
-        character for character in original_filename
-        if ord(character) >= 32 and ord(character) != 127
-    ).strip()
-    if not original_filename or len(original_filename) > 255:
-        raise HTTPException(status_code=422, detail="Некорректное имя файла.")
-
-    stored_filename = f"{uuid4().hex}{extension}"
-    target = DOCUMENTS_DIR / stored_filename
-    try:
-        DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
-        with conn() as db:
-            db.execute(
-                """
-                INSERT INTO patient_documents (
-                    patient_telegram_id, doctor_telegram_id, uploaded_by_telegram_id,
-                    original_filename, stored_filename, content_type, size_bytes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    patient_id,
-                    doctor_id,
-                    uploader_id,
-                    original_filename,
-                    stored_filename,
-                    content_type,
-                    len(content),
-                ),
-            )
-    except (OSError, sqlite3.Error) as exc:
-        target.unlink(missing_ok=True)
-        logger.exception("Could not store patient document for patient_id=%s", patient_id)
-        raise HTTPException(status_code=500, detail="Не удалось сохранить документ.") from exc
-    return {"ok": True}
-
-
-def document_download_response(document, document_id: int):
-    path = (DOCUMENTS_DIR / document["stored_filename"]).resolve()
-    if path.parent != DOCUMENTS_DIR.resolve() or not path.is_file():
-        logger.error("Stored patient document is missing or invalid: document_id=%s", document_id)
-        raise HTTPException(status_code=404, detail="Файл документа не найден.")
-    return FileResponse(
-        path,
-        media_type=document["content_type"],
-        filename=document["original_filename"],
-        content_disposition_type="attachment",
-        headers={"X-Content-Type-Options": "nosniff"},
-    )
-
-
-def delete_document_file(document, document_id: int):
-    path = (DOCUMENTS_DIR / document["stored_filename"]).resolve()
-    if path.parent != DOCUMENTS_DIR.resolve():
-        logger.error("Invalid stored patient document path: document_id=%s", document_id)
-        raise HTTPException(status_code=500, detail="Некорректный путь к документу.")
-    try:
-        path.unlink()
-    except OSError as exc:
-        logger.exception("Could not delete patient document id=%s", document_id)
-        raise HTTPException(status_code=500, detail="Не удалось удалить файл документа.") from exc
-
-
-@app.get("/api/doctor/patients/{patient_id}/documents")
-def list_patient_documents(
-    patient_id: int, authorization: str | None = Header(default=None)
-):
-    uid = current_user(authorization)
-    require_doctor(uid)
-    with conn() as db:
-        ensure_patient_link(db, uid, patient_id)
-        rows = document_rows(db, uid, patient_id, uid)
-    return {"items": [dict(row) for row in rows]}
-
-
-@app.post("/api/doctor/patients/{patient_id}/documents")
-async def upload_patient_document(
-    patient_id: int,
-    request: Request,
-    filename: str = Header(default="", alias="X-File-Name"),
-    authorization: str | None = Header(default=None),
-):
-    uid = current_user(authorization)
-    require_doctor(uid)
-    with conn() as db:
-        ensure_patient_link(db, uid, patient_id)
-    return await store_patient_document(patient_id, uid, uid, request, filename)
-
-
-@app.get("/api/doctor/patients/{patient_id}/documents/{document_id}")
-def download_patient_document(
-    patient_id: int,
-    document_id: int,
-    authorization: str | None = Header(default=None),
-):
-    uid = current_user(authorization)
-    require_doctor(uid)
-    with conn() as db:
-        ensure_patient_link(db, uid, patient_id)
-        document = db.execute(
-            """
-            SELECT original_filename, stored_filename, content_type
-            FROM patient_documents
-            WHERE id = ? AND doctor_telegram_id = ? AND patient_telegram_id = ?
-            """,
-            (document_id, uid, patient_id),
-        ).fetchone()
-    if not document:
-        raise HTTPException(status_code=404, detail="Документ не найден.")
-    return document_download_response(document, document_id)
-
-
-@app.delete("/api/doctor/patients/{patient_id}/documents/{document_id}")
-def delete_patient_document(
-    patient_id: int,
-    document_id: int,
-    authorization: str | None = Header(default=None),
-):
-    uid = current_user(authorization)
-    require_doctor(uid)
-    with conn() as db:
-        ensure_patient_link(db, uid, patient_id)
-        document = db.execute(
-            """
-            SELECT stored_filename, uploaded_by_telegram_id FROM patient_documents
-            WHERE id = ? AND doctor_telegram_id = ? AND patient_telegram_id = ?
-            """,
-            (document_id, uid, patient_id),
-        ).fetchone()
-    if not document:
-        raise HTTPException(status_code=404, detail="Документ не найден.")
-    if document["uploaded_by_telegram_id"] != uid:
-        raise HTTPException(status_code=403, detail="Удалить можно только свой документ.")
-    delete_document_file(document, document_id)
-    with conn() as db:
-        db.execute("DELETE FROM patient_documents WHERE id = ?", (document_id,))
-    return {"ok": True}
-
-
-@app.get("/api/patient/documents")
-def list_own_patient_documents(
-    authorization: str | None = Header(default=None),
-):
-    uid = current_user(authorization)
-    require_patient(uid)
-    with conn() as db:
-        doctor_id = linked_doctor_for_patient(db, uid)
-        rows = document_rows(db, doctor_id, uid, uid)
-    return {"items": [dict(row) for row in rows]}
-
-
-@app.post("/api/patient/documents")
-async def upload_own_patient_document(
-    request: Request,
-    filename: str = Header(default="", alias="X-File-Name"),
-    authorization: str | None = Header(default=None),
-):
-    uid = current_user(authorization)
-    require_patient(uid)
-    with conn() as db:
-        doctor_id = linked_doctor_for_patient(db, uid)
-    return await store_patient_document(uid, doctor_id, uid, request, filename)
-
-
-@app.get("/api/patient/documents/{document_id}")
-def download_own_patient_document(
-    document_id: int,
-    authorization: str | None = Header(default=None),
-):
-    uid = current_user(authorization)
-    require_patient(uid)
-    with conn() as db:
-        doctor_id = linked_doctor_for_patient(db, uid)
-        document = db.execute(
-            """
-            SELECT original_filename, stored_filename, content_type
-            FROM patient_documents
-            WHERE id = ? AND doctor_telegram_id = ? AND patient_telegram_id = ?
-            """,
-            (document_id, doctor_id, uid),
-        ).fetchone()
-    if not document:
-        raise HTTPException(status_code=404, detail="Документ не найден.")
-    return document_download_response(document, document_id)
-
-
-@app.delete("/api/patient/documents/{document_id}")
-def delete_own_patient_document(
-    document_id: int,
-    authorization: str | None = Header(default=None),
-):
-    uid = current_user(authorization)
-    require_patient(uid)
-    with conn() as db:
-        doctor_id = linked_doctor_for_patient(db, uid)
-        document = db.execute(
-            """
-            SELECT stored_filename, uploaded_by_telegram_id FROM patient_documents
-            WHERE id = ? AND doctor_telegram_id = ? AND patient_telegram_id = ?
-            """,
-            (document_id, doctor_id, uid),
-        ).fetchone()
-    if not document:
-        raise HTTPException(status_code=404, detail="Документ не найден.")
-    if document["uploaded_by_telegram_id"] != uid:
-        raise HTTPException(status_code=403, detail="Удалить можно только свой документ.")
-    delete_document_file(document, document_id)
-    with conn() as db:
-        db.execute("DELETE FROM patient_documents WHERE id = ?", (document_id,))
-    return {"ok": True}
+    return response
 
 
 @app.post("/api/answers")
@@ -1501,6 +1494,8 @@ def save_answers(body: AnswersIn, authorization: str | None = Header(default=Non
         maybe_send_scales_intro(uid)
     if body.questionnaire_id in STARTER_QUESTIONNAIRES and body.status == "completed":
         maybe_send_panas_intro(uid)
+    if body.questionnaire_id == "hads" and body.status == "completed":
+        maybe_send_pills_intro(uid)
     if body.status == "completed":
         maybe_notify_scale_alerts(uid, body.questionnaire_id, definition, body.answers, result)
     return {"ok": True, "status": body.status, "result": result}
