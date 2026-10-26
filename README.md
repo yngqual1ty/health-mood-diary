@@ -28,4 +28,6 @@ Doctors see a "Варианты лечения по клиническим ре�
 
 Only a de-identified summary of the patient's data is sent to the LLM (mood statistics, emotions, questionnaire scores, BDI item 9). Names, Telegram IDs and free-text notes are not sent. Every request and response is stored in the `treatment_suggestions` table for audit.
 
-The main doctor's account is assigned the doctor role when the API starts. The database is created locally and must not be committed.
+The main doctor's account is assigned the doctor role when the API starts. The database is created locally and must not be committed. Patients and their linked doctor share one document area: documents are grouped by uploader, and each can delete only the documents they uploaded.
+
+Medication reminders use the `APP_TIMEZONE` setting (default `Asia/Krasnoyarsk`) and are sent by the running bot process, so keep the bot running continuously. Each patient must start the bot before Telegram can deliver reminders. Uploaded patient documents are stored privately in `PATIENT_DOCUMENTS_DIR` (default `patient_documents/`); include that directory in protected backups and never commit it.

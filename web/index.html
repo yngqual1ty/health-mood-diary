@@ -573,6 +573,161 @@
 			border-bottom: 1px solid var(--line);
 		}
 
+		.medication-dose-row,
+		.patient-document-row {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			padding: 10px 0;
+			border-bottom: 1px solid var(--line);
+		}
+
+		.medication-dose-status {
+			text-align: right;
+		}
+
+		.medication-week-controls {
+			display: flex;
+			align-items: end;
+			gap: 10px;
+			margin-bottom: 12px;
+		}
+
+		.medication-week-controls label {
+			flex: 1;
+		}
+
+		.medication-week-controls button {
+			flex: 0 0 auto;
+			min-height: 42px;
+			padding: 8px 12px;
+		}
+
+		.medication-week-scroll {
+			overflow-x: auto;
+			margin: 0 -4px;
+		}
+
+		.medication-week-table {
+			width: 100%;
+			min-width: 720px;
+			border-collapse: collapse;
+			font-size: 13px;
+		}
+
+		.medication-week-table th,
+		.medication-week-table td {
+			padding: 9px 7px;
+			border: 1px solid var(--line);
+			text-align: center;
+		}
+
+		.medication-week-table th {
+			background: var(--soft-blue);
+			font-weight: 700;
+		}
+
+		.medication-week-table th:first-child,
+		.medication-week-table td:first-child {
+			width: 250px;
+			text-align: left;
+		}
+
+		.medication-course-title {
+			display: block;
+			font-weight: 700;
+		}
+
+		.medication-course-detail,
+		.medication-week-progress {
+			display: block;
+			margin-top: 4px;
+			color: var(--muted);
+			font-size: 12px;
+		}
+
+		.medication-week-doses {
+			display: flex;
+			justify-content: center;
+			flex-wrap: wrap;
+			gap: 5px;
+		}
+
+		.medication-week-dose {
+			display: inline-block;
+			width: 17px;
+			height: 17px;
+			border: 2px solid #58a9cc;
+			border-radius: 50%;
+			background: transparent;
+		}
+
+		.medication-week-dose.taken {
+			border-color: #168fc5;
+			background: #168fc5;
+		}
+
+		.medication-week-dose.missed,
+		.medication-week-dose.failed {
+			border-color: #c95757;
+			background: #c95757;
+		}
+
+		.medication-week-dose.unavailable {
+			border-color: #d19a36;
+			background: #d19a36;
+		}
+
+		.medication-week-dose.cancelled {
+			border-color: #999;
+			background: #ddd;
+		}
+
+		.medication-week-legend {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 12px;
+			margin-top: 12px;
+			color: var(--muted);
+			font-size: 12px;
+		}
+
+		.medication-week-legend span {
+			display: inline-flex;
+			align-items: center;
+			gap: 5px;
+		}
+
+		.medication-week-legend .medication-week-dose {
+			width: 13px;
+			height: 13px;
+		}
+
+		.patient-document-row a {
+			min-width: 0;
+			overflow-wrap: anywhere;
+			color: var(--teal-dark);
+			font-weight: 700;
+		}
+
+		.patient-document-group h3 {
+			margin: 18px 0 4px;
+			font-size: 16px;
+		}
+
+		.patient-document-row button,
+		.medication-plan button {
+			flex: 0 0 auto;
+			min-height: 38px;
+			padding: 8px 12px;
+		}
+
+		.patient-document-row button,
+		.medication-stop {
+			background: #c95757;
+		}
+
 		.admin-doctor-row {
 			display: flex;
 			align-items: center;
@@ -722,6 +877,7 @@ grid-template-columns: repeat(2, minmax(0, 1fr));
     <button id="startQuestionnairesTabBtn" onclick="showTab('startQuestionnaires')">Стартовые тесты</button>
 
     <button id="historyTabBtn" onclick="showTab('history')">История</button>
+<button id="documentsTabBtn" class="hidden" onclick="showTab('documents')">Документы</button>
 
     <button id="doctorTabBtn" class="hidden" onclick="showTab('doctor')">
 
@@ -846,6 +1002,20 @@ grid-template-columns: repeat(2, minmax(0, 1fr));
 
         </section>
 
+		<section id="documents" class="hidden">
+			<div class="card">
+				<h2>Общие документы</h2>
+				<div class="muted">Документы доступны вам и вашему врачу. Каждый может удалить только свои загрузки.</div>
+				<form id="ownPatientDocumentForm">
+					<label for="ownPatientDocumentFile">Загрузить документ (PDF, JPG, PNG; до 10 МБ)</label>
+					<input id="ownPatientDocumentFile" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" required>
+					<button class="full" type="submit">Загрузить документ</button>
+				</form>
+				<div id="ownPatientDocumentStatus" class="status"></div>
+				<div id="ownPatientDocuments">Загрузка документов…</div>
+			</div>
+		</section>
+
 
 
 <section id="doctor" class="hidden">
@@ -908,23 +1078,52 @@ grid-template-columns: repeat(2, minmax(0, 1fr));
 
             <h2>Ответы на стартовые тесты</h2>
 
-            <div id="patientQuestionnaireReport">Загрузка…</div>
+            <div id="patientQuestionnaireReport">Загрузка…</div>
 
-        </div>
+        </div>
 
-        <div class="card">
-            <h2>Варианты лечения по клиническим рекомендациям</h2>
-            <div class="muted">Прототип поддержки решений для врача. Варианты строятся только по загруженным клиническим рекомендациям и требуют клинической проверки.</div>
-            <div id="guidelinesStatus" class="muted"></div>
-            <label for="treatmentQuestion">Клиническая ситуация и вопрос</label>
-            <textarea id="treatmentQuestion" rows="5" maxlength="4000" placeholder="Предварительный диагноз, длительность, сопутствующие заболевания, текущая терапия, противопоказания, предпочтения пациента. Например: депрессивный эпизод средней степени, 2 месяца, ранее не лечился, предпочитает избегать препаратов."></textarea>
-            <label class="chip"><input id="treatmentIncludePatient" type="checkbox" checked>Учитывать дневник и опросники пациента (обезличенно)</label>
-            <button class="full" id="treatmentSubmit" onclick="requestTreatmentOptions()">Подобрать альтернативы</button>
-            <div id="treatmentStatus" class="status"></div>
-            <div id="treatmentResult"></div>
-        </div>
+<div class="card">
+	<h2>Приём лекарств</h2>
+	<div class="medication-week-controls">
+		<button type="button" aria-label="Предыдущая неделя" onclick="shiftMedicationWeek(-1)">←</button>
+		<label for="medicationDate">Неделя (выберите дату)
+			<input id="medicationDate" type="date" onchange="loadPatientMedications()">
+		</label>
+		<button type="button" aria-label="Следующая неделя" onclick="shiftMedicationWeek(1)">→</button>
+	</div>
+	<div id="medicationWeekRange" class="muted"></div>
+	<div id="patientMedications">Загрузка назначений…</div>
+	<form id="medicationForm">
+		<label for="medicationName">Лекарство</label>
+		<input id="medicationName" type="text" maxlength="160" required>
+		<label for="medicationDosage">Дозировка</label>
+		<input id="medicationDosage" type="text" maxlength="120" placeholder="Например, 1 таблетка" required>
+		<label for="medicationTimes">Время приёма ежедневно</label>
+		<input id="medicationTimes" type="text" placeholder="08:00, 20:00" required>
+		<div id="medicationTimezone" class="muted">Время указывается для часового пояса приложения.</div>
+		<label for="medicationStartDate">Начало курса</label>
+		<input id="medicationStartDate" type="date" required>
+		<label for="medicationEndDate">Окончание курса (необязательно)</label>
+		<input id="medicationEndDate" type="date">
+		<label for="medicationInstructions">Инструкция пациенту (необязательно)</label>
+		<textarea id="medicationInstructions" rows="2" maxlength="1000"></textarea>
+		<button class="full" type="submit">Добавить назначение</button>
+	</form>
+	<div id="medicationStatus" class="status"></div>
+</div>
 
-    </div>
+<div class="card">
+	<h2>Документы пациента</h2>
+	<form id="patientDocumentForm">
+		<label for="patientDocumentFile">Загрузить документ (PDF, JPG, PNG; до 10 МБ)</label>
+		<input id="patientDocumentFile" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" required>
+		<button class="full" type="submit">Загрузить документ</button>
+	</form>
+	<div id="patientDocumentStatus" class="status"></div>
+	<div id="patientDocuments">Загрузка документов…</div>
+</div>
+
+</div>
 
 </section>
 
@@ -953,9 +1152,9 @@ grid-template-columns: repeat(2, minmax(0, 1fr));
 
         function pickScore(n) { score = n; document.querySelectorAll('#scores button').forEach(b => b.classList.toggle('selected', Number(b.dataset.score) === n)) }
 
-        function headers() { return { 'Content-Type': 'application/json', 'Authorization': 'tma ' + (tg?.initData || '') } }
+function headers(json = true) { return { ...(json ? { 'Content-Type': 'application/json' } : {}), 'Authorization': 'tma ' + (tg?.initData || '') } }
 
-        async function api(path, options = {}) { const r = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } }); const d = await r.json().catch(() => ({})); if (!r.ok) throw Error(d.detail || 'Ошибка запроса'); return d }
+async function api(path, options = {}) { const isFile = options.body instanceof File; const r = await fetch(path, { ...options, headers: { ...headers(!isFile), ...(isFile ? { 'Content-Type': options.body.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(options.body.name) } : {}), ...(options.headers || {}) } }); const d = await r.json().catch(() => ({})); if (!r.ok) throw Error(d.detail || 'Ошибка запроса'); return d }
 
         async function saveMood() {
 
@@ -1142,9 +1341,9 @@ async function initApp() {
 
     try {
 
-        const me = await api('/api/me');
+const me = await api('/api/me');
 
-        currentRole = me.role;
+currentRole = me.role;
 
 
 
@@ -1152,6 +1351,7 @@ async function initApp() {
 
 	const doctorButton = document.getElementById('doctorTabBtn');
 	const adminDoctorsButton = document.getElementById('adminDoctorsTabBtn');
+	const documentsButton = document.getElementById('documentsTabBtn');
 
 
 
@@ -1166,6 +1366,7 @@ isAdminDoctor = isDoctor && me.is_admin === true;
 
         doctorButton.classList.toggle('hidden', !isDoctor);
 	adminDoctorsButton.classList.toggle('hidden', !isAdminDoctor);
+documentsButton.classList.toggle('hidden', isDoctor);
 	tabs.parentElement.classList.toggle('hidden', isDoctor && !isAdminDoctor);
 
 
@@ -1280,7 +1481,7 @@ function showTab(tab) {
 
 
 
-    ['mood', 'survey', 'history', 'doctor'].forEach(id => {
+    ['mood', 'survey', 'history', 'documents', 'doctor'].forEach(id => {
 
         document.getElementById(id)?.classList.toggle('hidden', id !== tab);
 
@@ -1289,6 +1490,7 @@ function showTab(tab) {
 
 
     if (tab === 'history') loadHistory();
+	if (tab === 'documents') loadPatientDocuments(null);
 
 
 
@@ -1686,7 +1888,12 @@ answers.appendChild(entry);
 
 
 async function openPatient(patientId) {
+	const patientChanged = Number(currentPatientId) !== Number(patientId);
 	currentPatientId = patientId;
+	if (patientChanged) {
+		document.getElementById('medicationDate').value = '';
+		document.getElementById('medicationStartDate').value = '';
+	}
 	const list = document.getElementById('patientList');
 	const details = document.getElementById('patientDetails');
 	const title = document.getElementById('patientTitle');
@@ -1696,7 +1903,6 @@ async function openPatient(patientId) {
 
 	list.classList.add('hidden');
 	details.classList.remove('hidden');
-	resetTreatmentOptions();
 	title.textContent = 'Загрузка данных пациента…';
 	moods.textContent = 'Загрузка записей…';
 	answers.textContent = 'Загрузка анкет…';
@@ -1897,6 +2103,9 @@ async function openPatient(patientId) {
 	} catch (error) {
 		answers.textContent = error.message || 'Не удалось загрузить анкеты.';
 	}
+
+	await loadPatientMedications(patientId);
+	await loadPatientDocuments(patientId);
 }
 
 async function saveMood() {
@@ -1970,116 +2179,353 @@ async function savePatientName() {
 	}
 }
 
-function el(tag, className, text) {
-	const node = document.createElement(tag);
-	if (className) node.className = className;
-	if (text !== undefined) node.textContent = text;
-	return node;
+function medicationDoseStatus(dose) {
+	if (dose.status === 'taken') return `✅ Принято${dose.taken_at ? ` · ${dose.taken_at}` : ''}`;
+	if (dose.status === 'missed') return '⚠ Не подтверждено вовремя';
+	if (dose.status === 'cancelled') return 'Назначение отменено';
+	if (dose.notification_state === 'unavailable') return 'Бот не запущен пациентом';
+	if (dose.notification_state === 'failed') return 'Не удалось отправить уведомление';
+	if (dose.notification_state === 'sent') return 'Уведомление отправлено · ожидается отметка';
+	return 'Ожидается';
 }
 
-async function resetTreatmentOptions() {
-	document.getElementById('treatmentQuestion').value = '';
-	document.getElementById('treatmentStatus').textContent = '';
-	document.getElementById('treatmentResult').replaceChildren();
-	const status = document.getElementById('guidelinesStatus');
+function medicationDoseClass(dose) {
+	if (dose.status === 'taken') return 'taken';
+	if (dose.status === 'missed') return 'missed';
+	if (dose.status === 'cancelled') return 'cancelled';
+	if (dose.notification_state === 'unavailable') return 'unavailable';
+	if (dose.notification_state === 'failed') return 'failed';
+	return 'pending';
+}
+
+function formatMedicationDate(dateText, options = {}) {
+	return new Date(`${dateText}T12:00:00`).toLocaleDateString('ru-RU', options);
+}
+
+function shiftMedicationWeek(offset) {
+	const input = document.getElementById('medicationDate');
+	const date = input.value ? new Date(`${input.value}T12:00:00`) : new Date();
+	date.setDate(date.getDate() + offset * 7);
+	input.value = [
+		date.getFullYear(),
+		String(date.getMonth() + 1).padStart(2, '0'),
+		String(date.getDate()).padStart(2, '0')
+	].join('-');
+	loadPatientMedications();
+}
+
+async function loadPatientMedications(patientId = currentPatientId) {
+	const list = document.getElementById('patientMedications');
+	const dateInput = document.getElementById('medicationDate');
+	if (patientId === null) return;
+	list.textContent = 'Загрузка назначений…';
 	try {
-		const data = await api('/api/doctor/guidelines');
-		const docs = data.documents.map(doc => doc.title).join('; ') || 'нет документов';
-		status.textContent = `База: ${docs} · фрагментов: ${data.chunks} · `
-			+ (data.llm_configured ? `модель: ${data.model}` : 'LLM не настроена, только поиск фрагментов');
+		const query = dateInput.value ? `?week_start=${encodeURIComponent(dateInput.value)}` : '';
+		const data = await api(`/api/doctor/patients/${patientId}/medications${query}`);
+		dateInput.value = data.week_start;
+		const startDate = document.getElementById('medicationStartDate');
+		if (!startDate.value) startDate.value = data.today;
+		document.getElementById('medicationTimezone').textContent =
+			`Время указано по часовому поясу приложения: ${data.timezone}.`;
+		document.getElementById('medicationWeekRange').textContent =
+			`Период: ${formatMedicationDate(data.days[0], { day: '2-digit', month: '2-digit', year: 'numeric' })} — ${formatMedicationDate(data.days[6], { day: '2-digit', month: '2-digit', year: 'numeric' })}`;
+		list.replaceChildren();
+		if (!data.items.length) {
+			list.textContent = 'Назначений пока нет.';
+			return;
+		}
+		const scroll = document.createElement('div');
+		scroll.className = 'medication-week-scroll';
+		const table = document.createElement('table');
+		table.className = 'medication-week-table';
+		const thead = document.createElement('thead');
+		const header = document.createElement('tr');
+		const courseHeading = document.createElement('th');
+		courseHeading.scope = 'col';
+		courseHeading.textContent = 'Курс / препарат';
+		header.appendChild(courseHeading);
+		data.days.forEach(day => {
+			const heading = document.createElement('th');
+			heading.scope = 'col';
+			heading.textContent = formatMedicationDate(day, {
+				weekday: 'short',
+				day: '2-digit',
+				month: '2-digit'
+			});
+			header.appendChild(heading);
+		});
+		thead.appendChild(header);
+		table.appendChild(thead);
+		const tbody = document.createElement('tbody');
+		data.items.forEach(medication => {
+			const row = document.createElement('tr');
+			const courseCell = document.createElement('td');
+			const title = document.createElement('span');
+			title.className = 'medication-course-title';
+			title.textContent = `${medication.name} · ${medication.dosage}`;
+			const course = document.createElement('span');
+			course.className = 'medication-course-detail';
+			course.textContent = `Курс: ${medication.start_date} — ${medication.end_date || 'без даты окончания'}${medication.active ? '' : ' · отменено'} · ${medication.times.join(', ')}`;
+			const doses = medication.days.flatMap(day => day.doses);
+			const completed = doses.filter(dose => dose.status === 'taken').length;
+			const expected = doses.filter(dose => !['cancelled'].includes(dose.status)).length;
+			const progress = document.createElement('span');
+			progress.className = 'medication-week-progress';
+			progress.textContent = `Принято ${completed} из ${expected} приёмов за неделю`;
+			courseCell.append(title, course, progress);
+			if (medication.active) {
+				const stop = document.createElement('button');
+				stop.type = 'button';
+				stop.className = 'medication-stop';
+				stop.textContent = 'Завершить назначение';
+				stop.onclick = () => stopMedication(medication.id, medication.name);
+				courseCell.appendChild(stop);
+			}
+			row.appendChild(courseCell);
+			medication.days.forEach(day => {
+				const cell = document.createElement('td');
+				if (!day.doses.length) {
+					cell.textContent = '—';
+				} else {
+					const markers = document.createElement('div');
+					markers.className = 'medication-week-doses';
+					day.doses.forEach(dose => {
+						const marker = document.createElement('span');
+						const statusClass = medicationDoseClass(dose);
+						marker.className = `medication-week-dose ${statusClass}`;
+						marker.title = `${dose.time} · ${medicationDoseStatus(dose)}`;
+						marker.setAttribute(
+							'aria-label',
+							`${formatMedicationDate(day.date, { weekday: 'long', day: 'numeric', month: 'long' })}, ${dose.time}: ${medicationDoseStatus(dose)}`
+						);
+						markers.appendChild(marker);
+					});
+					cell.appendChild(markers);
+				}
+				row.appendChild(cell);
+			});
+			tbody.appendChild(row);
+		});
+		table.appendChild(tbody);
+		scroll.appendChild(table);
+		list.appendChild(scroll);
+		const legend = document.createElement('div');
+		legend.className = 'medication-week-legend';
+		[
+			['taken', 'Принято'],
+			['pending', 'Ожидается'],
+			['missed', 'Не подтверждено вовремя'],
+			['unavailable', 'Пациент не запускал бота']
+		].forEach(([statusClass, label]) => {
+			const item = document.createElement('span');
+			const marker = document.createElement('i');
+			marker.className = `medication-week-dose ${statusClass}`;
+			marker.setAttribute('aria-hidden', 'true');
+			item.append(marker, document.createTextNode(label));
+			legend.appendChild(item);
+		});
+		list.appendChild(legend);
 	} catch (error) {
-		status.textContent = error.message || 'База рекомендаций недоступна.';
+		list.textContent = error.message || 'Не удалось загрузить назначения.';
 	}
 }
 
-async function requestTreatmentOptions() {
-	const question = document.getElementById('treatmentQuestion').value.trim();
-	const status = document.getElementById('treatmentStatus');
-	const result = document.getElementById('treatmentResult');
-	const button = document.getElementById('treatmentSubmit');
-	if (question.length < 3 || currentPatientId === null) {
-		status.textContent = 'Опишите клиническую ситуацию.';
-		return;
-	}
-	status.textContent = 'Поиск по рекомендациям и формирование вариантов…';
-	result.replaceChildren();
-	button.disabled = true;
+async function saveMedication(event) {
+	event.preventDefault();
+	if (currentPatientId === null) return;
+	const status = document.getElementById('medicationStatus');
+	const times = document.getElementById('medicationTimes').value
+		.split(',')
+		.map(value => value.trim())
+		.filter(Boolean);
 	try {
-		const data = await api(`/api/doctor/patients/${currentPatientId}/treatment-options`, {
+		await api(`/api/doctor/patients/${currentPatientId}/medications`, {
 			method: 'POST',
 			body: JSON.stringify({
-				question,
-				include_patient_data: document.getElementById('treatmentIncludePatient').checked
+				name: document.getElementById('medicationName').value.trim(),
+				dosage: document.getElementById('medicationDosage').value.trim(),
+				times,
+				start_date: document.getElementById('medicationStartDate').value,
+				end_date: document.getElementById('medicationEndDate').value || null,
+				instructions: document.getElementById('medicationInstructions').value.trim()
 			})
 		});
-		status.textContent = '';
-		renderTreatmentOptions(data, result);
+		status.textContent = 'Назначение добавлено. Напоминания отправляются ботом по расписанию.';
+		document.getElementById('medicationForm').reset();
+		document.getElementById('medicationStartDate').value =
+			document.getElementById('medicationDate').value;
+		await loadPatientMedications();
 	} catch (error) {
-		status.textContent = error.message || 'Не удалось получить варианты.';
-	} finally {
-		button.disabled = false;
+		status.textContent = error.message || 'Не удалось добавить назначение.';
 	}
 }
 
-function renderTreatmentOptions(data, root) {
-	const list = (title, items) => {
-		if (!items?.length) return;
-		const box = el('div', 'entry');
-		box.appendChild(el('b', '', title));
-		const ul = el('ul');
-		items.forEach(item => ul.appendChild(el('li', '', item)));
-		box.appendChild(ul);
-		root.appendChild(box);
-	};
-
-	list('⚠️ Тревожные признаки', data.red_flags);
-	if (data.clinical_summary) {
-		const box = el('div', 'entry');
-		box.append(el('b', '', 'Резюме'), el('div', '', data.clinical_summary));
-		root.appendChild(box);
+async function stopMedication(medicationId, medicationName) {
+	if (!confirm(`Завершить назначение «${medicationName}»? Будущие напоминания будут отменены.`)) {
+		return;
 	}
+	try {
+		await api(`/api/doctor/patients/${currentPatientId}/medications/${medicationId}`, {
+			method: 'DELETE'
+		});
+		document.getElementById('medicationStatus').textContent = 'Назначение завершено.';
+		await loadPatientMedications();
+	} catch (error) {
+		document.getElementById('medicationStatus').textContent =
+			error.message || 'Не удалось завершить назначение.';
+	}
+}
 
-	data.alternatives.forEach((alt, index) => {
-		const box = el('div', 'entry');
-		box.appendChild(el('b', '', `Вариант ${index + 1}: ${alt.title}`));
-		if (alt.approach) box.appendChild(el('div', 'muted', alt.approach));
-		if (!alt.grounded) {
-			box.appendChild(el('div', 'status', 'Нет ссылок на рекомендации — не опирайтесь на этот вариант без проверки.'));
-		}
+function formatDocumentSize(size) {
+	return size >= 1024 * 1024
+		? `${(size / (1024 * 1024)).toFixed(1)} МБ`
+		: `${Math.max(1, Math.ceil(size / 1024))} КБ`;
+}
+
+async function loadPatientDocuments(patientId = currentPatientId) {
+	const doctorView = currentRole === 'doctor';
+	const list = document.getElementById(doctorView ? 'patientDocuments' : 'ownPatientDocuments');
+	if (doctorView && patientId === null) return;
+	list.textContent = 'Загрузка документов…';
+	try {
+		const endpoint = doctorView
+			? `/api/doctor/patients/${patientId}/documents`
+			: '/api/patient/documents';
+		const data = await api(endpoint);
+		list.replaceChildren();
 		[
-			['Обоснование', alt.rationale],
-			['Кому подходит', alt.suitable_when],
-			['Ограничения и риски', alt.cautions],
-			['Мониторинг', alt.monitoring],
-			['Уровень доказательности', alt.evidence]
-		].forEach(([label, value]) => {
-			if (!value) return;
-			const row = el('div');
-			row.append(el('strong', '', `${label}: `), document.createTextNode(value));
-			box.appendChild(row);
+			{ role: 'doctor', title: 'Документы, которые прикрепил врач' },
+			{ role: 'patient', title: 'Документы, которые прикрепил пациент' }
+		].forEach(group => {
+			const files = data.items.filter(file => file.uploader_role === group.role);
+			const section = document.createElement('section');
+			section.className = 'patient-document-group';
+			const title = document.createElement('h3');
+			title.textContent = group.title;
+			section.appendChild(title);
+			if (!files.length) {
+				const empty = document.createElement('div');
+				empty.className = 'muted';
+				empty.textContent = 'Пока нет документов.';
+				section.appendChild(empty);
+			}
+			files.forEach(file => {
+				const row = document.createElement('div');
+				row.className = 'patient-document-row';
+				const details = document.createElement('div');
+				const download = document.createElement('a');
+				download.href = '#';
+				download.textContent = file.original_filename;
+				download.onclick = event => {
+					event.preventDefault();
+					downloadPatientDocument(file.id, file.original_filename, patientId);
+				};
+				const metadata = document.createElement('div');
+				metadata.className = 'muted';
+				metadata.textContent = `${formatDocumentSize(file.size_bytes)} · ${file.created_at}`;
+				details.append(download, metadata);
+				row.appendChild(details);
+				if (file.can_delete) {
+					const remove = document.createElement('button');
+					remove.type = 'button';
+					remove.textContent = 'Удалить';
+					remove.setAttribute('aria-label', `Удалить документ ${file.original_filename}`);
+					remove.onclick = () => deletePatientDocument(
+						file.id, file.original_filename, patientId
+					);
+					row.appendChild(remove);
+				}
+				section.appendChild(row);
+			});
+			list.appendChild(section);
 		});
-		if (alt.citations.length) box.appendChild(el('div', 'muted', 'Источники: ' + alt.citations.join(', ')));
-		root.appendChild(box);
-	});
-
-	list('Что уточнить', data.missing_information);
-	list('Учтённые данные пациента', data.patient_context);
-
-	if (data.sources.length) {
-		const details = el('details', 'questionnaire-answers');
-		details.appendChild(el('summary', '', `Фрагменты рекомендаций (${data.sources.length})`));
-		data.sources.forEach(source => {
-			const row = el('div', 'questionnaire-answer');
-			row.append(
-				el('strong', '', `[${source.id}] ${source.document}${source.section ? ' — ' + source.section : ''}`),
-				el('div', '', source.text)
-			);
-			details.appendChild(row);
-		});
-		root.appendChild(details);
+	} catch (error) {
+		list.textContent = error.message || 'Не удалось загрузить список документов.';
 	}
-	root.appendChild(el('div', 'muted', data.disclaimer));
 }
+
+async function uploadPatientDocument(event, patientView = false) {
+	event.preventDefault();
+	if (!patientView && currentPatientId === null) return;
+	const input = document.getElementById(patientView ? 'ownPatientDocumentFile' : 'patientDocumentFile');
+	const status = document.getElementById(patientView ? 'ownPatientDocumentStatus' : 'patientDocumentStatus');
+	const file = input.files[0];
+	if (!file) {
+		status.textContent = 'Выберите файл.';
+		return;
+	}
+	if (file.size > 10 * 1024 * 1024) {
+		status.textContent = 'Размер файла не должен превышать 10 МБ.';
+		return;
+	}
+	try {
+		const endpoint = patientView
+			? '/api/patient/documents'
+			: `/api/doctor/patients/${currentPatientId}/documents`;
+		await api(endpoint, {
+			method: 'POST',
+			body: file
+		});
+		status.textContent = 'Документ загружен.';
+		document.getElementById(patientView ? 'ownPatientDocumentForm' : 'patientDocumentForm').reset();
+		await loadPatientDocuments(patientView ? null : currentPatientId);
+	} catch (error) {
+		status.textContent = error.message || 'Не удалось загрузить документ.';
+	}
+}
+
+async function downloadPatientDocument(documentId, filename, patientId = currentPatientId) {
+	const endpoint = currentRole === 'doctor'
+		? `/api/doctor/patients/${patientId}/documents/${documentId}`
+		: `/api/patient/documents/${documentId}`;
+	try {
+		const response = await fetch(
+			endpoint,
+			{ headers: headers(false) }
+		);
+		if (!response.ok) {
+			const error = await response.json().catch(() => ({}));
+			throw new Error(error.detail || 'Не удалось скачать документ.');
+		}
+		const objectUrl = URL.createObjectURL(await response.blob());
+		const link = document.createElement('a');
+		link.href = objectUrl;
+		link.download = filename;
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		URL.revokeObjectURL(objectUrl);
+	} catch (error) {
+		document.getElementById(currentRole === 'doctor' ? 'patientDocumentStatus' : 'ownPatientDocumentStatus').textContent =
+			error.message || 'Не удалось скачать документ.';
+	}
+}
+
+async function deletePatientDocument(documentId, filename, patientId = currentPatientId) {
+	if (!confirm(`Удалить документ «${filename}»? Это действие нельзя отменить.`)) return;
+	const doctorView = currentRole === 'doctor';
+	const status = document.getElementById(doctorView ? 'patientDocumentStatus' : 'ownPatientDocumentStatus');
+	const endpoint = doctorView
+		? `/api/doctor/patients/${patientId}/documents/${documentId}`
+		: `/api/patient/documents/${documentId}`;
+	try {
+		await api(endpoint, {
+			method: 'DELETE'
+		});
+		status.textContent = 'Документ удалён.';
+		await loadPatientDocuments(doctorView ? patientId : null);
+	} catch (error) {
+		status.textContent = error.message || 'Не удалось удалить документ.';
+	}
+}
+
+document.getElementById('medicationForm').addEventListener('submit', saveMedication);
+document.getElementById('patientDocumentForm').addEventListener(
+	'submit', event => uploadPatientDocument(event)
+);
+document.getElementById('ownPatientDocumentForm').addEventListener(
+	'submit', event => uploadPatientDocument(event, true)
+);
 
 initApp();
 </script>
