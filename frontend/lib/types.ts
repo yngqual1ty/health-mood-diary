@@ -10,6 +10,7 @@ export type Me = {
   display_name: string;
   linked: boolean;
   doctor_telegram_id: number | null;
+  suicide_risk_completed: boolean;
 };
 
 export type Option = { value: number; label: string };

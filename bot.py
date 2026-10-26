@@ -30,8 +30,8 @@ from db import (
     list_patients_due_for_pills_checkin,
     mark_pills_prompt_sent,
     write_pills_log,
-    should_send_starter_intro,
-    mark_starter_intro_sent,
+    should_send_suicide_risk_intro,
+    mark_suicide_risk_intro_sent,
     _utc_date,
 )
 from app import consume_invite
@@ -39,9 +39,10 @@ from app import consume_invite
 log = logging.getLogger(__name__)
 dp = Dispatcher()
 
-# Linked patients receive one HADS reminder every REMINDER_INTERVAL_DAYS
-# (default 14). The first send is due that many days after the doctor link;
-# later sends use last_sent_at. Completing a scale does not reset the clock.
+# Linked patients who already completed ОСР receive one HADS reminder every
+# REMINDER_INTERVAL_DAYS (default 14). The first send is due that many days
+# after the doctor link; later sends use last_sent_at. Completing a scale
+# does not reset the clock. HADS is not sent before the first completed ОСР.
 REMINDER_TEXT = (
     "Плановая проверка самочувствия\n\n"
     "Это регулярное напоминание раз в две недели. "
@@ -51,24 +52,11 @@ REMINDER_TEXT = (
     "Откройте анкету кнопкой ниже — это займёт несколько минут."
 )
 
-STARTER_INTRO_SCALES = (
-    (
-        "hads",
-        "Заполнить HADS",
-        "Пожалуйста, заполните три стартовые шкалы. Это не диагноз — "
-        "так проще отслеживать самочувствие вместе с врачом.\n\n"
-        "HADS — тревога и депрессия.",
-    ),
-    (
-        "bai",
-        "Заполнить BAI",
-        "BAI — тревога. Заполните, когда будет удобно.",
-    ),
-    (
-        "bdi",
-        "Заполнить BDI",
-        "BDI — депрессия. Вместе с остальными шкалами её увидит ваш врач.",
-    ),
+SUICIDE_RISK_INTRO_TEXT = (
+    "Пожалуйста, заполните оценку суицидального риска.\n\n"
+    "Это скрининг для врача, а не диагноз. "
+    "Так проще начать наблюдение вместе с врачом.\n\n"
+    "Откройте анкету кнопкой ниже — это займёт несколько минут."
 )
 
 
@@ -143,18 +131,21 @@ def pills_menu(day: str):
 
 
 # Daily mood is the Mini App page /mood/, not a Telegram inline keyboard and not PANAS.
+# First linked /start sends only ОСР. HADS/BAI/BDI go out after a completed ОСР in app.py.
 # ШПАНА stays one-time after the first HADS/BAI/BDI completion in app.py.
 
 
-async def send_starter_intro(message: Message, telegram_id: int) -> bool:
+async def send_suicide_risk_intro(message: Message, telegram_id: int) -> bool:
     try:
-        for path, label, text in STARTER_INTRO_SCALES:
-            await message.answer(text, reply_markup=scale_menu(path, label))
+        await message.answer(
+            SUICIDE_RISK_INTRO_TEXT,
+            reply_markup=scale_menu("suicide-risk", "Оценка суицидального риска"),
+        )
     except (TelegramForbiddenError, TelegramBadRequest) as exc:
-        log.warning("Не удалось отправить стартовые шкалы %s: %s", telegram_id, exc)
+        log.warning("Не удалось отправить ОСР %s: %s", telegram_id, exc)
         return False
     except TelegramNetworkError:
-        log.exception("Сеть недоступна при отправке стартовых шкал %s", telegram_id)
+        log.exception("Сеть недоступна при отправке ОСР %s", telegram_id)
         return False
     return True
 
@@ -175,8 +166,8 @@ async def start(message: Message):
     else:
         text = "Привет! Здесь можно вести дневник настроения и заполнять анкеты."
     await message.answer(text, reply_markup=menu())
-    if should_send_starter_intro(user.id) and await send_starter_intro(message, user.id):
-        mark_starter_intro_sent(user.id)
+    if should_send_suicide_risk_intro(user.id) and await send_suicide_risk_intro(message, user.id):
+        mark_suicide_risk_intro_sent(user.id)
 
 
 async def _send_reminder(bot: Bot, telegram_id: int) -> bool:

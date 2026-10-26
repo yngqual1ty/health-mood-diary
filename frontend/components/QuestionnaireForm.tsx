@@ -1,8 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { Questionnaire } from "@/lib/types";
+import type { Me, Questionnaire } from "@/lib/types";
+
+const REQUIRES_SUICIDE_RISK = new Set(["hads", "bai", "bdi", "panas"]);
 
 function ResultView({ questionnaire }: { questionnaire: Questionnaire }) {
   const result = questionnaire.latest?.result;
@@ -42,12 +45,51 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [status, setStatus] = useState("");
   const [saving, setSaving] = useState(false);
+  const [blocked, setBlocked] = useState(false);
 
   useEffect(() => {
-    api<Questionnaire>(`/api/questionnaires/${questionnaireId}`)
-      .then(setData)
-      .catch((error) => setStatus(error.message));
+    let cancelled = false;
+    setData(null);
+    setBlocked(false);
+    setStatus("");
+    async function load() {
+      try {
+        if (REQUIRES_SUICIDE_RISK.has(questionnaireId)) {
+          const me = await api<Me>("/api/me");
+          if (!me.suicide_risk_completed) {
+            if (!cancelled) setBlocked(true);
+            return;
+          }
+        }
+        const next = await api<Questionnaire>(`/api/questionnaires/${questionnaireId}`);
+        if (!cancelled) setData(next);
+      } catch (error) {
+        if (!cancelled) {
+          setStatus(error instanceof Error ? error.message : "Не удалось загрузить опросник.");
+        }
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
   }, [questionnaireId]);
+
+  if (blocked) {
+    return (
+      <>
+        <h1>Сначала оценка суицидального риска</h1>
+        <section className="card">
+          <p>Эта шкала откроется после заполнения оценки суицидального риска.</p>
+          <p>
+            <Link href="/suicide-risk/" className="quiet-link">
+              Открыть оценку суицидального риска
+            </Link>
+          </p>
+        </section>
+      </>
+    );
+  }
 
   if (!data && status) return <div className="card">{status}</div>;
   if (!data) return <div className="card muted">Загрузка опросника…</div>;

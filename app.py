@@ -29,15 +29,38 @@ from db import (
     _utc_date,
     claim_panas_intro,
     release_panas_intro,
+    claim_scales_intro,
+    release_scales_intro,
     claim_hotline_notice,
     release_hotline_notice,
+    has_completed_suicide_risk,
 )
 from auth import validate_init_data, AuthError
 import clinical_rag
 
 log = logging.getLogger(__name__)
 STARTER_QUESTIONNAIRES = frozenset({"hads", "bai", "bdi"})
+GATED_AFTER_OSR = frozenset({"hads", "bai", "bdi", "panas"})
 ALERT_QUESTIONNAIRES = frozenset({"suicide-risk", "hads", "bdi"})
+SCALES_INTRO = (
+    (
+        "hads",
+        "Заполнить HADS",
+        "Пожалуйста, заполните три стартовые шкалы. Это не диагноз — "
+        "так проще отслеживать самочувствие вместе с врачом.\n\n"
+        "HADS — тревога и депрессия.",
+    ),
+    (
+        "bai",
+        "Заполнить BAI",
+        "BAI — тревога. Заполните, когда будет удобно.",
+    ),
+    (
+        "bdi",
+        "Заполнить BDI",
+        "BDI — депрессия. Вместе с остальными шкалами её увидит ваш врач.",
+    ),
+)
 # ОСР chart score is C-SSRS max 0–5 and cannot reach 18. Doctor alert uses
 # the sum of all nine item values (max 23). See questionnaires.json scoring.rules.
 OSR_SUM_THRESHOLD = 18
@@ -325,6 +348,35 @@ def maybe_send_panas_intro(telegram_id: int) -> None:
         release_panas_intro(telegram_id)
 
 
+def send_scales_intro(telegram_id: int) -> bool:
+    for path, label, text in SCALES_INTRO:
+        web_app_url = _mini_app_url(path)
+        if not web_app_url:
+            return False
+        if not send_telegram_message(
+            telegram_id,
+            text,
+            {
+                "inline_keyboard": [[
+                    {"text": label, "web_app": {"url": web_app_url}},
+                ]],
+            },
+        ):
+            return False
+    return True
+
+
+def maybe_send_scales_intro(telegram_id: int) -> None:
+    """One-time HADS/BAI/BDI after the first completed ОСР. Not sent on /start."""
+    if not _telegram_api_url("sendMessage") or not _mini_app_url("hads"):
+        log.warning("Стартовые шкалы: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
+        return
+    if not claim_scales_intro(telegram_id):
+        return
+    if not send_scales_intro(telegram_id):
+        release_scales_intro(telegram_id)
+
+
 def questionnaire_item_sum(definition, answers) -> int:
     """Sum of numeric values for every item in the definition (not C-SSRS max)."""
     values = {str(key): int(value) for key, value in answers.items() if str(value).lstrip("-").isdigit()}
@@ -485,6 +537,7 @@ def me(authorization: str | None = Header(default=None)):
         "display_name": user["display_name"],
         "linked": bool(link),
         "doctor_telegram_id": link["doctor_telegram_id"] if link else None,
+        "suicide_risk_completed": has_completed_suicide_risk(uid),
     }
 
 
@@ -993,6 +1046,11 @@ def treatment_options(
 def save_answers(body: AnswersIn, authorization: str | None = Header(default=None)):
     uid = current_user(authorization)
     require_patient(uid)
+    if body.questionnaire_id in GATED_AFTER_OSR and not has_completed_suicide_risk(uid):
+        raise HTTPException(
+            status_code=403,
+            detail="Сначала заполните оценку суицидального риска.",
+        )
     definition = questionnaire_definitions().get(body.questionnaire_id)
     result = {}
     if body.questionnaire_id == "daily-checkin-v1":
@@ -1036,6 +1094,8 @@ def save_answers(body: AnswersIn, authorization: str | None = Header(default=Non
             (uid, body.questionnaire_id, json.dumps(body.answers, ensure_ascii=False),
              body.status, json.dumps(result, ensure_ascii=False)),
         )
+    if body.questionnaire_id == "suicide-risk" and body.status == "completed":
+        maybe_send_scales_intro(uid)
     if body.questionnaire_id in STARTER_QUESTIONNAIRES and body.status == "completed":
         maybe_send_panas_intro(uid)
     if body.status == "completed":

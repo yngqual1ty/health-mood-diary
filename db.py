@@ -32,6 +32,7 @@ def init_db():
             first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '',
             username TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            suicide_risk_intro_sent_at TEXT,
             starter_intro_sent_at TEXT,
             panas_intro_sent_at TEXT
         );
@@ -96,6 +97,8 @@ def init_db():
         for name in ("first_name", "last_name", "username", "display_name"):
             if name not in user_columns:
                 db.execute(f"ALTER TABLE users ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+        if "suicide_risk_intro_sent_at" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN suicide_risk_intro_sent_at TEXT")
         if "starter_intro_sent_at" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN starter_intro_sent_at TEXT")
         if "panas_intro_sent_at" not in user_columns:
@@ -129,6 +132,12 @@ def list_patients_due_for_reminder(interval_days, now=None):
             LEFT JOIN reminders r ON r.patient_telegram_id = l.patient_telegram_id
             WHERE COALESCE(u.role, 'patient') = 'patient'
               AND COALESCE(r.last_sent_at, l.created_at) <= ?
+              AND EXISTS (
+                SELECT 1 FROM answers a
+                WHERE a.patient_telegram_id = l.patient_telegram_id
+                  AND a.questionnaire_id = 'suicide-risk'
+                  AND COALESCE(a.status, 'completed') = 'completed'
+              )
             """,
             (cutoff,),
         ).fetchall()
@@ -274,12 +283,28 @@ def list_patients_due_for_pills_checkin(now=None):
     return due
 
 
-def should_send_starter_intro(telegram_id):
-    """True for a linked patient who has never received the HADS/BAI/BDI intro."""
+def has_completed_suicide_risk(telegram_id):
+    """True if this patient has at least one completed ОСР (suicide-risk) answer."""
     with conn() as db:
         row = db.execute(
             """
-            SELECT COALESCE(u.role, 'patient') AS role, u.starter_intro_sent_at
+            SELECT 1 FROM answers
+            WHERE patient_telegram_id = ?
+              AND questionnaire_id = 'suicide-risk'
+              AND COALESCE(status, 'completed') = 'completed'
+            LIMIT 1
+            """,
+            (telegram_id,),
+        ).fetchone()
+    return bool(row)
+
+
+def should_send_suicide_risk_intro(telegram_id):
+    """True for a linked patient who has never received the ОСР Mini App intro."""
+    with conn() as db:
+        row = db.execute(
+            """
+            SELECT COALESCE(u.role, 'patient') AS role, u.suicide_risk_intro_sent_at
             FROM links l
             LEFT JOIN users u ON u.telegram_id = l.patient_telegram_id
             WHERE l.patient_telegram_id = ?
@@ -288,10 +313,10 @@ def should_send_starter_intro(telegram_id):
         ).fetchone()
     if not row or row["role"] == "doctor":
         return False
-    return not row["starter_intro_sent_at"]
+    return not row["suicide_risk_intro_sent_at"]
 
 
-def mark_starter_intro_sent(telegram_id, sent_at=None):
+def mark_suicide_risk_intro_sent(telegram_id, sent_at=None):
     stamp = _utc_stamp(sent_at)
     with conn() as db:
         db.execute(
@@ -300,10 +325,44 @@ def mark_starter_intro_sent(telegram_id, sent_at=None):
         )
         db.execute(
             """
-            UPDATE users SET starter_intro_sent_at = ?
-            WHERE telegram_id = ? AND starter_intro_sent_at IS NULL
+            UPDATE users SET suicide_risk_intro_sent_at = ?
+            WHERE telegram_id = ? AND suicide_risk_intro_sent_at IS NULL
             """,
             (stamp, telegram_id),
+        )
+
+
+def claim_scales_intro(telegram_id, sent_at=None):
+    """True if this caller may send the one-time HADS/BAI/BDI intro (after ОСР)."""
+    stamp = _utc_stamp(sent_at)
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        cursor = db.execute(
+            """
+            UPDATE users SET starter_intro_sent_at = ?
+            WHERE telegram_id = ?
+              AND COALESCE(role, 'patient') = 'patient'
+              AND starter_intro_sent_at IS NULL
+              AND EXISTS (
+                SELECT 1 FROM answers
+                WHERE patient_telegram_id = users.telegram_id
+                  AND questionnaire_id = 'suicide-risk'
+                  AND COALESCE(status, 'completed') = 'completed'
+              )
+            """,
+            (stamp, telegram_id),
+        )
+        return cursor.rowcount == 1
+
+
+def release_scales_intro(telegram_id):
+    with conn() as db:
+        db.execute(
+            "UPDATE users SET starter_intro_sent_at = NULL WHERE telegram_id = ?",
+            (telegram_id,),
         )
 
 
