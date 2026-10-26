@@ -12,16 +12,27 @@ load_dotenv(BASE_DIR / ".env", override=False)
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from db import conn, init_db
+from db import (
+    conn,
+    init_db,
+    get_regimen,
+    upsert_regimen,
+    list_pills_log,
+    write_pills_log,
+    PILLS_TAKEN_VALUES,
+    _utc_date,
+)
 from auth import validate_init_data, AuthError
 import clinical_rag
 
 app = FastAPI(title="Mood Diary MVP")
-WEB_DIR = Path(__file__).parent / "web"
+FRONTEND_DIR = BASE_DIR / "frontend" / "out"
 INVITE_TTL_HOURS = 24
 ADMIN_DOCTOR_ID = int(os.getenv("ADMIN_DOCTOR_ID", "0"))
+DEV_TELEGRAM_ID = int(os.getenv("DEV_TELEGRAM_ID", "0"))
 QUESTIONNAIRES_PATH = BASE_DIR / "questionnaires.json"
 
 
@@ -58,12 +69,16 @@ def score_questionnaire(definition, answers):
     return {}
 
 
+def frontend_index():
+    index = FRONTEND_DIR / "index.html"
+    if not index.exists():
+        raise HTTPException(status_code=500, detail="Интерфейс не собран. Выполните npm run build в frontend/.")
+    return FileResponse(index, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+
+
 @app.get("/")
 def index():
-    return FileResponse(
-        WEB_DIR / "index.html",
-        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
-    )
+    return frontend_index()
 
 
 app.add_middleware(
@@ -96,6 +111,13 @@ def current_user(authorization: str | None):
         if authorization and authorization.lower().startswith("tma ")
         else ""
     )
+    if not raw.strip() and DEV_TELEGRAM_ID > 0:
+        with conn() as db:
+            db.execute(
+                "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+                (DEV_TELEGRAM_ID,),
+            )
+        return DEV_TELEGRAM_ID
     try:
         data = validate_init_data(raw)
     except AuthError as e:
@@ -159,6 +181,23 @@ class DoctorCreateIn(BaseModel):
 class TreatmentQueryIn(BaseModel):
     question: str = Field(min_length=3, max_length=4000)
     include_patient_data: bool = True
+
+
+class PillItemIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    time: str = Field(default="", max_length=40)
+    note: str = Field(default="", max_length=200)
+
+
+class PillsRegimenIn(BaseModel):
+    items: list[PillItemIn] = Field(min_length=1, max_length=20)
+    confirm: bool = False
+
+
+class PillsLogIn(BaseModel):
+    taken: str = Field(pattern="^(yes|no|partial)$")
+    note: str = Field(default="", max_length=200)
+    date: str | None = None
 
 
 def require_doctor(uid: int):
@@ -225,6 +264,97 @@ def create_mood(body: MoodIn, authorization: str | None = Header(default=None)):
     return {"ok": True}
 
 
+def _normalize_regimen_items(items: list[PillItemIn]):
+    normalized = []
+    for item in items:
+        name = item.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Укажите название лекарства.")
+        time = item.time.strip()
+        note = item.note.strip()
+        entry = {"name": name}
+        if time:
+            entry["time"] = time
+        if note:
+            entry["note"] = note
+        normalized.append(entry)
+    if not normalized:
+        raise HTTPException(status_code=422, detail="Добавьте хотя бы одно лекарство.")
+    return normalized
+
+
+def _regimen_payload(row):
+    if not row:
+        return {"configured": False, "items": []}
+    return {
+        "configured": True,
+        "items": row["items"],
+        "created_at": row["created_at"],
+    }
+
+
+def _parse_log_date(raw: str | None):
+    today = _utc_date()
+    day = (raw or today).strip()
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Дата должна быть в формате YYYY-MM-DD.") from exc
+    if day > today:
+        raise HTTPException(status_code=422, detail="Нельзя отметить будущий день.")
+    return day
+
+
+@app.get("/api/pills")
+def get_pills(authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    return _regimen_payload(get_regimen(uid))
+
+
+@app.post("/api/pills")
+def save_pills(body: PillsRegimenIn, authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    existing = get_regimen(uid)
+    if existing and not body.confirm:
+        raise HTTPException(
+            status_code=409,
+            detail="Схема уже заполнена. Повторное сохранение только после подтверждения.",
+        )
+    saved = upsert_regimen(uid, _normalize_regimen_items(body.items))
+    return _regimen_payload(saved)
+
+
+@app.post("/api/pills/log")
+def save_pills_log(body: PillsLogIn, authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    if not get_regimen(uid):
+        raise HTTPException(status_code=409, detail="Сначала заполните схему лекарств.")
+    if body.taken not in PILLS_TAKEN_VALUES:
+        raise HTTPException(status_code=422, detail="Отметьте: yes, no или partial.")
+    day = _parse_log_date(body.date)
+    row, _created = write_pills_log(uid, day, body.taken, body.note, overwrite=True)
+    return {"ok": True, "item": row}
+
+
+@app.get("/api/doctor/patients/{patient_id}/pills")
+def doctor_patient_pills(
+    patient_id: int, authorization: str | None = Header(default=None)
+):
+    uid = current_user(authorization)
+    require_doctor(uid)
+    with conn() as db:
+        ensure_patient_link(db, uid, patient_id)
+    regimen = get_regimen(patient_id)
+    since = (datetime.utcnow() - timedelta(days=29)).strftime("%Y-%m-%d")
+    log = list_pills_log(patient_id, since, limit=30)
+    payload = _regimen_payload(regimen)
+    payload["log"] = log
+    return payload
+
+
 @app.get("/api/moods")
 def list_moods(authorization: str | None = Header(default=None)):
     uid = current_user(authorization)
@@ -251,10 +381,7 @@ def list_questionnaires(authorization: str | None = Header(default=None)):
             (uid, *definitions.keys()),
         ).fetchall()
     latest = {}
-    completed = set()
     for row in rows:
-        if row["status"] == "completed":
-            completed.add(row["questionnaire_id"])
         if row["questionnaire_id"] not in latest:
             item = dict(row)
             item["result"] = json.loads(item["result"] or "{}")
@@ -263,8 +390,110 @@ def list_questionnaires(authorization: str | None = Header(default=None)):
         "items": [
             {**definition, "latest": latest.get(questionnaire_id)}
             for questionnaire_id, definition in definitions.items()
-            if questionnaire_id not in completed
+            if definition.get("available")
         ]
+    }
+
+
+def parse_answer_row(row) -> dict:
+    item = dict(row)
+    for key in ("payload", "result"):
+        if key not in item:
+            continue
+        try:
+            item[key] = json.loads(item[key] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            item[key] = {}
+    return item
+
+
+def series_from_answers(answers: list[dict], definitions: dict) -> dict:
+    """One latest completed attempt per calendar day for each questionnaire."""
+    by_id: dict[str, dict[str, dict]] = {}
+    for item in answers:
+        if item.get("status") != "completed":
+            continue
+        qid = item["questionnaire_id"]
+        if qid not in definitions:
+            continue
+        day = (item.get("created_at") or "")[:10]
+        if not day:
+            continue
+        by_id.setdefault(qid, {})[day] = item
+    series = {}
+    for qid, by_day in by_id.items():
+        definition = definitions[qid]
+        scoring = definition.get("scoring") or {}
+        points = []
+        for day in sorted(by_day):
+            result = by_day[day].get("result") or {}
+            point = {"date": day, "created_at": by_day[day].get("created_at")}
+            if result.get("type") == "sum":
+                point["score"] = result.get("score")
+                point["interpretation"] = result.get("interpretation")
+            elif result.get("type") == "domains":
+                point["domains"] = result.get("domains") or {}
+            points.append(point)
+        series[qid] = {
+            "id": qid,
+            "title": definition.get("title", qid),
+            "scoring": scoring,
+            "points": points,
+        }
+    return series
+
+
+@app.get("/api/questionnaires/{questionnaire_id}")
+def get_questionnaire(questionnaire_id: str, authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    definition = questionnaire_definitions().get(questionnaire_id)
+    if not definition or not definition.get("available"):
+        raise HTTPException(status_code=404, detail="Опросник не найден или недоступен.")
+    with conn() as db:
+        rows = db.execute(
+            """SELECT questionnaire_id, payload, status, result, created_at FROM answers
+               WHERE patient_telegram_id = ? AND questionnaire_id = ?
+               ORDER BY id DESC LIMIT 60""",
+            (uid, questionnaire_id),
+        ).fetchall()
+    history = [parse_answer_row(row) for row in rows]
+    return {**definition, "latest": history[0] if history else None, "history": history}
+
+
+@app.get("/api/me/results")
+def my_results(authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    definitions = {
+        qid: definition
+        for qid, definition in questionnaire_definitions().items()
+        if definition.get("available")
+    }
+    with conn() as db:
+        moods = [
+            dict(row)
+            for row in db.execute(
+                """SELECT score, emotions, created_at FROM moods
+                   WHERE patient_telegram_id = ? ORDER BY id ASC""",
+                (uid,),
+            ).fetchall()
+            if (row["created_at"] or "")[:10] < today
+        ]
+        answers = [
+            parse_answer_row(row)
+            for row in db.execute(
+                """SELECT questionnaire_id, payload, status, result, created_at FROM answers
+                   WHERE patient_telegram_id = ? ORDER BY id ASC""",
+                (uid,),
+            ).fetchall()
+            if (row["created_at"] or "")[:10] < today
+        ]
+    return {
+        "today": today,
+        "moods": moods,
+        "series": series_from_answers(answers, definitions),
     }
 
 
@@ -634,3 +863,23 @@ def consume_invite(patient_id: int, token: str) -> bool:
             (patient_id, invite["doctor_telegram_id"]),
         )
         return True
+
+
+@app.get("/{full_path:path}")
+def frontend(full_path: str):
+    if full_path.startswith("api/") or full_path == "api":
+        raise HTTPException(status_code=404, detail="Not found")
+    file = FRONTEND_DIR / full_path
+    if file.is_file():
+        return FileResponse(file)
+    nested = FRONTEND_DIR / full_path / "index.html"
+    if nested.is_file():
+        return FileResponse(nested, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+    html = FRONTEND_DIR / f"{full_path}.html"
+    if html.is_file():
+        return FileResponse(html, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+    return frontend_index()
+
+
+if (FRONTEND_DIR / "_next").is_dir():
+    app.mount("/_next", StaticFiles(directory=FRONTEND_DIR / "_next"), name="next-assets")
