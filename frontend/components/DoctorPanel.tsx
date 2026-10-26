@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, apiBlob, displayName } from "@/lib/api";
+import { appToday, lastAppDays } from "@/lib/timezone";
 import type { Answer, DoctorPills, Mood, Patient, PatientDocument, Questionnaire, ResultSeries, TreatmentResponse } from "@/lib/types";
 import { ResultsCharts } from "./ResultsCharts";
 
@@ -114,7 +115,7 @@ export function DoctorPanel() {
   }
 
   if (selected) {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = appToday();
     const pastMoods = moods.filter((item) => item.created_at.slice(0, 10) < today);
     const pastAnswers = answers.filter((item) => item.created_at.slice(0, 10) < today);
     const series = buildSeries(pastAnswers, meta);
@@ -251,14 +252,6 @@ const TAKEN_LABELS = {
   partial: "Частично",
 } as const;
 
-function lastUtcDays(count: number) {
-  const now = new Date();
-  return Array.from({ length: count }, (_, index) => {
-    const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - index));
-    return day.toISOString().slice(0, 10);
-  });
-}
-
 function formatDocDate(value: string) {
   const [day, time] = value.split(" ");
   if (!day) return value;
@@ -369,8 +362,8 @@ function PillsAdherence({ pills }: { pills: DoctorPills | null }) {
       {pills.configured && (
         <>
           <h2 style={{ marginTop: 16 }}>Отметки за 30 дней</h2>
-          <p className="muted">Ежедневные ответы бота. Даты по UTC.</p>
-          {lastUtcDays(30).map((day) => {
+          <p className="muted">Ежедневные ответы бота. Даты по московскому времени.</p>
+          {lastAppDays(30).map((day) => {
             const entry = byDate[day];
             return (
               <div className="entry row" key={day}>

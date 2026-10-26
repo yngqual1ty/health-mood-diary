@@ -1,19 +1,16 @@
 import asyncio
 import json
 import logging
-import os
 import sqlite3
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from db import conn
+from db import APP_TIMEZONE, conn
 
 logger = logging.getLogger(__name__)
-APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Krasnoyarsk"))
 REMINDER_GRACE = timedelta(minutes=30)
 RETRY_DELAY = timedelta(minutes=5)
 

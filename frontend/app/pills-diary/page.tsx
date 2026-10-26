@@ -105,7 +105,7 @@ export default function PillsDiaryPage() {
             </div>
           ))}
           <p className="muted">
-            Схема уже заполнена. Бот вечером (по UTC) спросит, получилось ли принять лекарства,
+            Схема уже заполнена. Бот вечером (по московскому времени) спросит, получилось ли принять лекарства,
             и запишет ответ в дневник.
           </p>
           <button className="full secondary" onClick={requestEdit}>

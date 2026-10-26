@@ -31,6 +31,7 @@ try:
 except ImportError:  # aiogram 2 fallback; this project uses aiogram 3
     from aiogram.types import ContentType
 from db import (
+    APP_TIMEZONE,
     conn,
     init_db,
     list_patients_due_for_reminder,
@@ -111,9 +112,9 @@ def reminder_menu():
     return scale_menu("hads", "Заполнить HADS")
 
 
-# Daily pills check-in uses UTC calendar dates. After PILLS_CHECKIN_HOUR_UTC
+# Daily pills check-in uses APP_TIMEZONE calendar dates. After PILLS_CHECKIN_HOUR
 # (default 20:00) the bot asks once if a regimen exists and there is no log
-# or prompt for that UTC day. Independent of the biweekly scale reminders.
+# or prompt for that local day. Independent of the biweekly scale reminders.
 PILLS_TAKEN_LABELS = {"yes": "да", "no": "нет", "partial": "частично"}
 
 
@@ -282,8 +283,15 @@ async def _send_pills_checkin(bot: Bot, telegram_id: int, items, day: str) -> bo
 
 
 async def send_due_pills_checkins(bot: Bot):
-    hour = min(23, _env_int("PILLS_CHECKIN_HOUR_UTC", 20, minimum=0))
-    now = datetime.utcnow()
+    hour = min(
+        23,
+        _env_int(
+            "PILLS_CHECKIN_HOUR",
+            _env_int("PILLS_CHECKIN_HOUR_UTC", 20, minimum=0),
+            minimum=0,
+        ),
+    )
+    now = datetime.now(APP_TIMEZONE)
     if now.hour < hour:
         return
     day = _utc_date(now)

@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from db import (
+    APP_TIMEZONE,
     conn,
     init_db,
     get_regimen,
@@ -46,7 +47,6 @@ from db import (
     delete_sessions_for_user,
 )
 from auth import validate_init_data, validate_login_widget, AuthError
-from medication_notifications import APP_TIMEZONE
 import clinical_rag
 
 log = logging.getLogger(__name__)
@@ -642,7 +642,7 @@ def maybe_notify_scale_alerts(patient_id: int, questionnaire_id: str, definition
         if not _telegram_api_url("sendMessage"):
             log.warning("Уведомление врачу: нет BOT_TOKEN, пропуск")
             return
-        stamp = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")
+        stamp = datetime.now(APP_TIMEZONE).strftime("%d.%m.%Y %H:%M %Z")
         send_doctor_scale_alert(
             link["doctor_telegram_id"],
             patient_display_label(user, patient_id),
@@ -745,11 +745,12 @@ def create_mood(body: MoodIn, authorization: str | None = Header(default=None)):
     require_patient(uid)
     emotions = [e.strip() for e in body.emotions if e.strip()]
     note = body.note.strip()
+    stamp = datetime.now(APP_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
     with conn() as db:
         db.execute(
-            """INSERT INTO moods(patient_telegram_id, score, emotions, note)
-               VALUES (?, ?, ?, ?)""",
-            (uid, body.score, ", ".join(emotions), note),
+            """INSERT INTO moods(patient_telegram_id, score, emotions, note, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (uid, body.score, ", ".join(emotions), note, stamp),
         )
     return {"ok": True}
 
@@ -838,7 +839,7 @@ def doctor_patient_pills(
     with conn() as db:
         ensure_patient_link(db, uid, patient_id)
     regimen = get_regimen(patient_id)
-    since = (datetime.utcnow() - timedelta(days=29)).strftime("%Y-%m-%d")
+    since = (datetime.now(APP_TIMEZONE).date() - timedelta(days=29)).isoformat()
     log = list_pills_log(patient_id, since, limit=30)
     payload = _regimen_payload(regimen)
     payload["log"] = log
@@ -955,7 +956,7 @@ def get_questionnaire(questionnaire_id: str, authorization: str | None = Header(
 def my_results(authorization: str | None = Header(default=None)):
     uid = current_user(authorization)
     require_patient(uid)
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = _utc_date()
     definitions = {
         qid: definition
         for qid, definition in questionnaire_definitions().items()

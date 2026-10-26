@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { appToday } from "@/lib/timezone";
 import type { Mood } from "@/lib/types";
 
 const OPTIONS = [
@@ -12,10 +13,6 @@ const OPTIONS = [
   { score: 4, label: "Хорошо", color: "#b6eb9e", mouth: "smile" as const },
   { score: 5, label: "Супер", color: "#7eebc8", mouth: "happy" as const },
 ];
-
-function utcToday() {
-  return new Date().toISOString().slice(0, 10);
-}
 
 function Face({
   color,
@@ -56,7 +53,7 @@ export default function MoodPage() {
   useEffect(() => {
     api<{ items: Mood[] }>("/api/moods")
       .then((data) => {
-        const today = utcToday();
+        const today = appToday();
         const latest = data.items.find((item) => item.created_at.slice(0, 10) === today);
         if (latest) {
           setSelected(latest.score);

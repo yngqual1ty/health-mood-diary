@@ -4,12 +4,14 @@ import re
 import sqlite3
 import unicodedata
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env", override=False)
+APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Europe/Moscow"))
 DB_PATH = os.getenv("DATABASE_PATH", str(BASE_DIR / "mood.sqlite3"))
 DB_PATH = str((BASE_DIR / DB_PATH).resolve()) if not os.path.isabs(DB_PATH) else DB_PATH
 _docs_env = os.getenv("DOCS_DIR", "").strip()
@@ -217,6 +219,14 @@ def _utc_now(now=None):
     return now or datetime.utcnow()
 
 
+def _app_now(now=None):
+    if now is None:
+        return datetime.now(APP_TIMEZONE)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(APP_TIMEZONE)
+
+
 def _utc_stamp(now=None):
     return _utc_now(now).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -260,8 +270,8 @@ PILLS_TAKEN_VALUES = ("yes", "no", "partial")
 
 
 def _utc_date(now=None):
-    """UTC calendar date (YYYY-MM-DD). Pills check-ins use UTC, not patient-local time."""
-    return _utc_now(now).strftime("%Y-%m-%d")
+    """APP_TIMEZONE calendar date (YYYY-MM-DD). Used for once-per-day pills/hotline/mood checks."""
+    return _app_now(now).strftime("%Y-%m-%d")
 
 
 def _parse_regimen_items(raw):
@@ -356,7 +366,7 @@ def write_pills_log(patient_telegram_id, day, taken, note="", overwrite=False):
 
 
 def list_patients_due_for_pills_checkin(now=None):
-    """Patients with a regimen, no UTC-day log, and no prompt sent yet today."""
+    """Patients with a regimen, no APP_TIMEZONE-day log, and no prompt sent yet today."""
     today = _utc_date(now)
     with conn() as db:
         rows = db.execute(
@@ -538,7 +548,7 @@ def release_pills_intro(telegram_id):
 
 
 def claim_hotline_notice(patient_telegram_id, questionnaire_id, now=None):
-    """True if this caller may send the patient hotline for this scale today (UTC)."""
+    """True if this caller may send the patient hotline for this scale today (APP_TIMEZONE)."""
     today = _utc_date(now)
     with conn() as db:
         cursor = db.execute(
@@ -555,7 +565,7 @@ def claim_hotline_notice(patient_telegram_id, questionnaire_id, now=None):
 
 
 def release_hotline_notice(patient_telegram_id, questionnaire_id, now=None):
-    """Undo a failed claim so the hotline can be retried the same UTC day."""
+    """Undo a failed claim so the hotline can be retried the same APP_TIMEZONE day."""
     today = _utc_date(now)
     with conn() as db:
         db.execute(
@@ -593,11 +603,11 @@ def is_doctor(telegram_id):
 
 
 def write_mood_for_day(patient_telegram_id, day, score, label="", now=None):
-    """Insert one mood for this UTC date. Returns True if inserted, False if a row already exists."""
+    """Insert one mood for this APP_TIMEZONE date. Returns True if inserted, False if a row already exists."""
     if score not in (1, 2, 3, 4, 5):
         raise ValueError("score must be 1–5")
     label = (label or "").strip()
-    created_at = f"{day} {_utc_now(now).strftime('%H:%M:%S')}"
+    created_at = f"{day} {_app_now(now).strftime('%H:%M:%S')}"
     with conn() as db:
         existing = db.execute(
             """
