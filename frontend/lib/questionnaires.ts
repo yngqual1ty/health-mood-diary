@@ -1,4 +1,4 @@
-export const CHART_ORDER = ["hads", "bdi", "bai", "panas"] as const;
+export const CHART_ORDER = ["hads", "bdi", "bai", "panas", "suicide-risk"] as const;
 
 export const DOMAIN_COLORS: Record<string, string> = {
   A: "#c47a2c",

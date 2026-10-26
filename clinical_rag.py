@@ -394,6 +394,45 @@ def summarize_patient(moods: list[dict], answers: list[dict], definitions: dict[
         if (bdi.get("result") or {}).get("score", 0) >= 29:
             retrieval_terms.append("тяжелый депрессивный эпизод")
 
+    suicide_risk = latest.get("suicide-risk")
+    if suicide_risk:
+        payload = suicide_risk.get("payload") or {}
+        result = suicide_risk.get("result") or {}
+        date = suicide_risk["created_at"][:10]
+        score = int(result.get("score") or 0)
+        interpretation = str(result.get("interpretation") or "")
+        intent = int(payload.get("suicide-risk-4", 0) or 0)
+        plan = int(payload.get("suicide-risk-5", 0) or 0)
+        attempt = int(payload.get("suicide-risk-6", 0) or 0)
+        no_reasons = int(payload.get("suicide-risk-7", 0) or 0)
+        no_help = int(payload.get("suicide-risk-8", 0) or 0)
+        means = int(payload.get("suicide-risk-9", 0) or 0)
+        high = score >= 4 or "Высокий" in interpretation
+        if high or intent or plan or attempt:
+            markers = []
+            if intent:
+                markers.append("намерение")
+            if plan:
+                markers.append("план")
+            if attempt >= 5:
+                markers.append("действия в последние 3 месяца")
+            elif attempt:
+                markers.append("суицидальные действия в анамнезе (>3 мес.)")
+            extras = []
+            if no_reasons:
+                extras.append("защитные факторы не указаны")
+            if no_help:
+                extras.append("нет опоры на помощь")
+            if means:
+                extras.append("отмечен доступ к способу")
+            detail = f" ({', '.join(markers)})" if markers else ""
+            extra = f"; {'; '.join(extras)}" if extras else ""
+            red_flags.append(
+                f"Оценка суицидального риска (C-SSRS): {interpretation or score} от {date}"
+                f"{detail}{extra}. Требуется очная оценка суицидального риска."
+            )
+            retrieval_terms.append("суицидальный риск оценка")
+
     if checkins:
         recent = checkins[:14]
         poor_sleep = sum(1 for c in recent if c.get("sleep") == "Плохо")

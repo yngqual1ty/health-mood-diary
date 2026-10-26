@@ -31,7 +31,9 @@ def init_db():
             telegram_id INTEGER PRIMARY KEY, role TEXT NOT NULL DEFAULT 'patient',
             first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '',
             username TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            starter_intro_sent_at TEXT,
+            panas_intro_sent_at TEXT
         );
         CREATE TABLE IF NOT EXISTS invites (
             token TEXT PRIMARY KEY, doctor_telegram_id INTEGER NOT NULL, used_by INTEGER,
@@ -79,11 +81,19 @@ def init_db():
             patient_telegram_id INTEGER PRIMARY KEY,
             last_asked_date TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS mood_prompts (
+            patient_telegram_id INTEGER PRIMARY KEY,
+            last_asked_date TEXT NOT NULL
+        );
         """)
         user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
         for name in ("first_name", "last_name", "username", "display_name"):
             if name not in user_columns:
                 db.execute(f"ALTER TABLE users ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+        if "starter_intro_sent_at" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN starter_intro_sent_at TEXT")
+        if "panas_intro_sent_at" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN panas_intro_sent_at TEXT")
         invite_columns = {row["name"] for row in db.execute("PRAGMA table_info(invites)").fetchall()}
         if "expires_at" not in invite_columns:
             db.execute("ALTER TABLE invites ADD COLUMN expires_at TEXT")
@@ -135,7 +145,7 @@ PILLS_TAKEN_VALUES = ("yes", "no", "partial")
 
 
 def _utc_date(now=None):
-    """UTC calendar date (YYYY-MM-DD). Pills check-ins and logs use UTC, not patient-local time."""
+    """UTC calendar date (YYYY-MM-DD). Pills check-ins use UTC, not patient-local time."""
     return _utc_now(now).strftime("%Y-%m-%d")
 
 
@@ -258,12 +268,152 @@ def list_patients_due_for_pills_checkin(now=None):
     return due
 
 
+def should_send_starter_intro(telegram_id):
+    """True for a linked patient who has never received the HADS/BAI/BDI intro."""
+    with conn() as db:
+        row = db.execute(
+            """
+            SELECT COALESCE(u.role, 'patient') AS role, u.starter_intro_sent_at
+            FROM links l
+            LEFT JOIN users u ON u.telegram_id = l.patient_telegram_id
+            WHERE l.patient_telegram_id = ?
+            """,
+            (telegram_id,),
+        ).fetchone()
+    if not row or row["role"] == "doctor":
+        return False
+    return not row["starter_intro_sent_at"]
+
+
+def mark_starter_intro_sent(telegram_id, sent_at=None):
+    stamp = _utc_stamp(sent_at)
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        db.execute(
+            """
+            UPDATE users SET starter_intro_sent_at = ?
+            WHERE telegram_id = ? AND starter_intro_sent_at IS NULL
+            """,
+            (stamp, telegram_id),
+        )
+
+
+def claim_panas_intro(telegram_id, sent_at=None):
+    """True if this caller may send the one-time ШПАНА prompt (not a daily ask)."""
+    stamp = _utc_stamp(sent_at)
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        cursor = db.execute(
+            """
+            UPDATE users SET panas_intro_sent_at = ?
+            WHERE telegram_id = ?
+              AND COALESCE(role, 'patient') = 'patient'
+              AND panas_intro_sent_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM answers
+                WHERE patient_telegram_id = users.telegram_id
+                  AND questionnaire_id = 'panas'
+              )
+            """,
+            (stamp, telegram_id),
+        )
+        return cursor.rowcount == 1
+
+
+def release_panas_intro(telegram_id):
+    with conn() as db:
+        db.execute(
+            "UPDATE users SET panas_intro_sent_at = NULL WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+
+
 def mark_pills_prompt_sent(patient_telegram_id, asked_date=None):
     day = asked_date or _utc_date()
     with conn() as db:
         db.execute(
             """
             INSERT INTO pills_prompts (patient_telegram_id, last_asked_date)
+            VALUES (?, ?)
+            ON CONFLICT(patient_telegram_id) DO UPDATE SET last_asked_date = excluded.last_asked_date
+            """,
+            (patient_telegram_id, day),
+        )
+
+
+def is_doctor(telegram_id):
+    with conn() as db:
+        row = db.execute(
+            "SELECT role FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+    return bool(row and row["role"] == "doctor")
+
+
+def write_mood_for_day(patient_telegram_id, day, score, label="", now=None):
+    """Insert one mood for this UTC date. Returns True if inserted, False if a row already exists."""
+    if score not in (1, 2, 3, 4, 5):
+        raise ValueError("score must be 1–5")
+    label = (label or "").strip()
+    created_at = f"{day} {_utc_now(now).strftime('%H:%M:%S')}"
+    with conn() as db:
+        existing = db.execute(
+            """
+            SELECT id FROM moods
+            WHERE patient_telegram_id = ?
+              AND date(created_at) = ?
+            LIMIT 1
+            """,
+            (patient_telegram_id, day),
+        ).fetchone()
+        if existing:
+            return False
+        db.execute(
+            """
+            INSERT INTO moods(patient_telegram_id, score, emotions, note, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (patient_telegram_id, score, label, label, created_at),
+        )
+        return True
+
+
+def list_patients_due_for_mood_checkin(now=None):
+    """Unused leftover: daily mood is Mini App /mood/. Table mood_prompts is not written."""
+    today = _utc_date(now)
+    with conn() as db:
+        rows = db.execute(
+            """
+            SELECT l.patient_telegram_id
+            FROM links l
+            LEFT JOIN users u ON u.telegram_id = l.patient_telegram_id
+            LEFT JOIN mood_prompts p
+              ON p.patient_telegram_id = l.patient_telegram_id
+            WHERE COALESCE(u.role, 'patient') = 'patient'
+              AND COALESCE(p.last_asked_date, '') < ?
+              AND NOT EXISTS (
+                SELECT 1 FROM moods m
+                WHERE m.patient_telegram_id = l.patient_telegram_id
+                  AND date(m.created_at) = ?
+              )
+            """,
+            (today, today),
+        ).fetchall()
+    return [row["patient_telegram_id"] for row in rows]
+
+
+def mark_mood_prompt_sent(patient_telegram_id, asked_date=None):
+    day = asked_date or _utc_date()
+    with conn() as db:
+        db.execute(
+            """
+            INSERT INTO mood_prompts (patient_telegram_id, last_asked_date)
             VALUES (?, ?)
             ON CONFLICT(patient_telegram_id) DO UPDATE SET last_asked_date = excluded.last_asked_date
             """,

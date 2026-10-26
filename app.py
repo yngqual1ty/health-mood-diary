@@ -1,6 +1,9 @@
 import json
+import logging
 import os
 import secrets
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -24,9 +27,21 @@ from db import (
     write_pills_log,
     PILLS_TAKEN_VALUES,
     _utc_date,
+    claim_panas_intro,
+    release_panas_intro,
 )
 from auth import validate_init_data, AuthError
 import clinical_rag
+
+log = logging.getLogger(__name__)
+STARTER_QUESTIONNAIRES = frozenset({"hads", "bai", "bdi"})
+PANAS_INTRO_TEXT = (
+    "Следующая короткая шкала — ШПАНА\n\n"
+    "Она помогает отметить, насколько в последнее время были выражены "
+    "положительные и отрицательные переживания. Это не диагноз и не требует "
+    "срочных действий.\n\n"
+    "Заполните, когда будет удобно — обычно это занимает несколько минут."
+)
 
 app = FastAPI(title="Mood Diary MVP")
 FRONTEND_DIR = BASE_DIR / "frontend" / "out"
@@ -63,8 +78,15 @@ def score_questionnaire(definition, answers):
                         if item.get("domain") == domain and item.get("id") in values)
             domains[domain] = {"score": total, "interpretation": interpret_score(total, config.get("bands", []))}
         return {"type": "domains", "domains": domains}
-    if scoring.get("type") == "sum":
-        total = sum(values[item["id"]] for item in definition.get("items", []) if item.get("id") in values)
+    if scoring.get("type") in {"sum", "max"}:
+        include_domains = scoring.get("include_domains")
+        item_scores = [
+            values[item["id"]]
+            for item in definition.get("items", [])
+            if item.get("id") in values
+            and (not include_domains or item.get("domain") in include_domains)
+        ]
+        total = max(item_scores, default=0) if scoring.get("type") == "max" else sum(item_scores)
         return {"type": "sum", "score": total, "interpretation": interpret_score(total, scoring.get("bands", []))}
     return {}
 
@@ -221,6 +243,65 @@ def require_patient(uid: int):
         ).fetchone()
     if not user or user["role"] != "patient":
         raise HTTPException(status_code=403, detail="Дневник доступен только пациенту.")
+
+
+def _telegram_api_url(method: str) -> str | None:
+    token = os.getenv("BOT_TOKEN", "").strip()
+    if not token:
+        return None
+    # TELEGRAM_PROXY is a Bot API host (TelegramAPIServer.from_base), not an HTTP proxy.
+    base = os.getenv("TELEGRAM_PROXY", "").strip() or "https://api.telegram.org"
+    return f"{base.rstrip('/')}/bot{token}/{method}"
+
+
+def _mini_app_url(path: str) -> str | None:
+    app_url = os.getenv("APP_URL", "").strip()
+    if not app_url.startswith("https://"):
+        return None
+    return f"{app_url.rstrip('/')}/{path.strip('/')}/"
+
+
+def send_panas_intro(telegram_id: int) -> bool:
+    url = _telegram_api_url("sendMessage")
+    web_app_url = _mini_app_url("panas")
+    if not url or not web_app_url:
+        return False
+    payload = {
+        "chat_id": telegram_id,
+        "text": PANAS_INTRO_TEXT,
+        "reply_markup": {
+            "inline_keyboard": [[
+                {"text": "Заполнить ШПАНА", "web_app": {"url": web_app_url}},
+            ]],
+        },
+    }
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read() or b"{}")
+        return bool(isinstance(data, dict) and data.get("ok"))
+    except urllib.error.HTTPError as exc:
+        log.warning("Telegram вернул %s при отправке ШПАНА %s", exc.code, telegram_id)
+        return False
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        log.warning("Не удалось отправить ШПАНА %s", telegram_id)
+        return False
+
+
+def maybe_send_panas_intro(telegram_id: int) -> None:
+    """One-time ШПАНА after first HADS/BAI/BDI. Daily mood is Mini App /mood/, not PANAS."""
+    if not _telegram_api_url("sendMessage") or not _mini_app_url("panas"):
+        log.warning("ШПАНА: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
+        return
+    if not claim_panas_intro(telegram_id):
+        return
+    if not send_panas_intro(telegram_id):
+        release_panas_intro(telegram_id)
 
 
 @app.get("/api/me")
@@ -797,6 +878,8 @@ def save_answers(body: AnswersIn, authorization: str | None = Header(default=Non
             (uid, body.questionnaire_id, json.dumps(body.answers, ensure_ascii=False),
              body.status, json.dumps(result, ensure_ascii=False)),
         )
+    if body.questionnaire_id in STARTER_QUESTIONNAIRES and body.status == "completed":
+        maybe_send_panas_intro(uid)
     return {"ok": True, "status": body.status, "result": result}
 
 

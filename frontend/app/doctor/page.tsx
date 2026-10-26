@@ -3,5 +3,9 @@
 import { DoctorPanel } from "@/components/DoctorPanel";
 
 export default function DoctorPage() {
-  return <DoctorPanel />;
+  return (
+    <div className="doctor">
+      <DoctorPanel />
+    </div>
+  );
 }

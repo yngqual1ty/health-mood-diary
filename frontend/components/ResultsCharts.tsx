@@ -15,17 +15,30 @@ import type { Mood, ResultSeries } from "@/lib/types";
 
 type ChartRow = { date: string; [key: string]: number | string };
 
-function lineChart(rows: ChartRow[], lines: { key: string; color: string; name: string }[]) {
+function lineChart(
+  rows: ChartRow[],
+  lines: { key: string; color: string; name: string }[],
+  variant?: "doctor",
+) {
   if (!rows.length) return null;
+  const tick = variant === "doctor" ? { fontSize: 12, fill: "#111" } : { fontSize: 12 };
+  const legendStyle = variant === "doctor" ? { color: "#111" } : undefined;
   return (
     <div className="chart">
       <ResponsiveContainer>
         <LineChart data={rows} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
           <CartesianGrid stroke="#e4eeed" vertical={false} />
-          <XAxis dataKey="date" tickFormatter={formatDay} tick={{ fontSize: 12 }} />
-          <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
+          <XAxis dataKey="date" tickFormatter={formatDay} tick={tick} />
+          <YAxis tick={tick} allowDecimals={false} />
           <Tooltip labelFormatter={(value) => String(value)} />
-          <Legend />
+          <Legend
+            wrapperStyle={legendStyle}
+            formatter={
+              variant === "doctor"
+                ? (value) => <span style={{ color: "#111" }}>{value}</span>
+                : undefined
+            }
+          />
           {lines.map((line) => (
             <Line
               key={line.key}
@@ -47,9 +60,11 @@ function lineChart(rows: ChartRow[], lines: { key: string; color: string; name: 
 export function ResultsCharts({
   moods,
   series,
+  variant,
 }: {
   moods: Mood[];
   series: Record<string, ResultSeries>;
+  variant?: "doctor";
 }) {
   const moodByDay = new Map<string, number>();
   moods.forEach((mood) => moodByDay.set(mood.created_at.slice(0, 10), mood.score));
@@ -58,13 +73,14 @@ export function ResultsCharts({
     .map(([date, score]) => ({ date, score }));
 
   const blocks = CHART_ORDER.map((id) => series[id]).filter(Boolean);
+  const captionClass = variant === "doctor" ? "muted chart-note" : "muted";
   if (!moodRows.length && !blocks.length) {
     return (
       <div className="card empty">
         <h2>Пока нет прошлых результатов</h2>
-        <p className="muted">
-          На главной показаны только дни до сегодняшнего. Заполните HADS, BDI, BAI или ШПАНА —
-          завтра они появятся на графике.
+        <p className={captionClass}>
+          На главной показаны только дни до сегодняшнего. Отметьте настроение или заполните
+          HADS, BDI, BAI, ШПАНА или оценку суицидального риска — завтра они появятся на графике.
         </p>
       </div>
     );
@@ -75,8 +91,8 @@ export function ResultsCharts({
       {moodRows.length > 0 && (
         <section className="card">
           <h2>Настроение</h2>
-          <p className="muted">Оценка 1–5 за предыдущие дни.</p>
-          {lineChart(moodRows, [{ key: "score", color: "#087f79", name: "Настроение" }])}
+          <p className={captionClass}>Оценка 1–5 за предыдущие дни.</p>
+          {lineChart(moodRows, [{ key: "score", color: "#087f79", name: "Настроение" }], variant)}
         </section>
       )}
       {blocks.map((item) => {
@@ -97,7 +113,7 @@ export function ResultsCharts({
           return (
             <section className="card" key={item.id}>
               <h2>{item.title}</h2>
-              {lineChart(rows, lines)}
+              {lineChart(rows, lines, variant)}
             </section>
           );
         }
@@ -107,7 +123,7 @@ export function ResultsCharts({
         return (
           <section className="card" key={item.id}>
             <h2>{item.title}</h2>
-            {lineChart(rows, [{ key: "score", color: "#2d6f92", name: "Баллы" }])}
+            {lineChart(rows, [{ key: "score", color: "#2d6f92", name: "Баллы" }], variant)}
           </section>
         );
       })}

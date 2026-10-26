@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ResultsCharts } from "@/components/ResultsCharts";
 import { api } from "@/lib/api";
@@ -19,6 +20,11 @@ export default function HomePage() {
     <>
       <h1>Результаты</h1>
       <p className="muted">Графики за предыдущие дни. Сегодняшние ответы появятся здесь завтра.</p>
+      <p>
+        <Link href="/mood/" className="quiet-link">
+          Отметить настроение
+        </Link>
+      </p>
       {error && <div className="card">{error}</div>}
       {!data && !error && <div className="card muted">Загрузка графиков…</div>}
       {data && <ResultsCharts moods={data.moods} series={data.series} />}

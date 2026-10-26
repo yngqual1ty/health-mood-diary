@@ -21,7 +21,7 @@ export type Question = {
 };
 
 export type Scoring =
-  | { type: "sum"; bands: { max: number; label: string }[] }
+  | { type: "sum" | "max"; bands: { max: number; label: string }[] }
   | {
       type: "domains";
       domains: Record<string, { title: string; bands: { max: number; label: string }[] }>;

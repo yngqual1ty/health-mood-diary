@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { HelpTicker } from "@/components/HelpTicker";
 import { api } from "@/lib/api";
 import { initTelegram } from "@/lib/telegram";
 import type { Me } from "@/lib/types";
@@ -50,7 +51,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <>
-      <main className={isDoctor ? "app has-nav" : "app"}>{children}</main>
+      {!isDoctor && <HelpTicker />}
+      <main className={isDoctor ? "app has-nav" : "app has-ticker"}>{children}</main>
       {isDoctor && (
         <nav className="nav" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>
           {tabs.map((tab) => {

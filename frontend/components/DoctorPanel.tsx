@@ -123,7 +123,7 @@ export function DoctorPanel() {
           <input id="patientName" value={name} onChange={(event) => setName(event.target.value)} />
           <button className="full" onClick={saveName}>Сохранить имя</button>
         </section>
-        <ResultsCharts moods={pastMoods} series={series} />
+        <ResultsCharts variant="doctor" moods={pastMoods} series={series} />
         <PillsAdherence pills={pills} />
         <section className="card">
           <h2>Варианты лечения по клиническим рекомендациям</h2>

@@ -30,6 +30,8 @@ from db import (
     list_patients_due_for_pills_checkin,
     mark_pills_prompt_sent,
     write_pills_log,
+    should_send_starter_intro,
+    mark_starter_intro_sent,
     _utc_date,
 )
 from app import consume_invite
@@ -37,16 +39,36 @@ from app import consume_invite
 log = logging.getLogger(__name__)
 dp = Dispatcher()
 
-# Linked patients receive one BAI/BDI/HADS message every REMINDER_INTERVAL_DAYS
+# Linked patients receive one HADS reminder every REMINDER_INTERVAL_DAYS
 # (default 14). The first send is due that many days after the doctor link;
 # later sends use last_sent_at. Completing a scale does not reset the clock.
 REMINDER_TEXT = (
     "Плановая проверка самочувствия\n\n"
     "Это регулярное напоминание раз в две недели. "
     "Оно не является диагнозом и не требует срочных действий.\n\n"
-    "Пожалуйста, заполните три короткие шкалы: BAI (тревога), BDI (настроение) "
-    "и HADS (тревога и депрессия). Так удобнее отслеживать изменения вместе с врачом.\n\n"
-    "Откройте анкеты кнопками ниже — это займёт несколько минут."
+    "Пожалуйста, заполните шкалу HADS (тревога и депрессия). "
+    "Так удобнее отслеживать изменения вместе с врачом.\n\n"
+    "Откройте анкету кнопкой ниже — это займёт несколько минут."
+)
+
+STARTER_INTRO_SCALES = (
+    (
+        "hads",
+        "Заполнить HADS",
+        "Пожалуйста, заполните три стартовые шкалы. Это не диагноз — "
+        "так проще отслеживать самочувствие вместе с врачом.\n\n"
+        "HADS — тревога и депрессия.",
+    ),
+    (
+        "bai",
+        "Заполнить BAI",
+        "BAI — тревога. Заполните, когда будет удобно.",
+    ),
+    (
+        "bdi",
+        "Заполнить BDI",
+        "BDI — настроение. Вместе с остальными шкалами её увидит ваш врач.",
+    ),
 )
 
 
@@ -62,7 +84,7 @@ def _env_int(name, default, minimum=None):
 
 
 def app_path(path):
-    return f"{APP_URL.rstrip('/')}/{path.lstrip('/')}"
+    return f"{APP_URL.rstrip('/')}/{path.strip('/')}/"
 
 
 def menu():
@@ -71,14 +93,16 @@ def menu():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Открыть дневник", web_app=WebAppInfo(url=APP_URL))]])
 
 
-def reminder_menu():
+def scale_menu(path, label):
     if not APP_URL.startswith("https://"):
         raise RuntimeError("APP_URL must be a valid HTTPS URL in .env")
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Заполнить BAI", web_app=WebAppInfo(url=app_path("bai")))],
-        [InlineKeyboardButton(text="Заполнить BDI", web_app=WebAppInfo(url=app_path("bdi")))],
-        [InlineKeyboardButton(text="Заполнить HADS", web_app=WebAppInfo(url=app_path("hads")))],
+        [InlineKeyboardButton(text=label, web_app=WebAppInfo(url=app_path(path)))],
     ])
+
+
+def reminder_menu():
+    return scale_menu("hads", "Заполнить HADS")
 
 
 # Daily pills check-in uses UTC calendar dates. After PILLS_CHECKIN_HOUR_UTC
@@ -118,6 +142,23 @@ def pills_menu(day: str):
     ]])
 
 
+# Daily mood is the Mini App page /mood/, not a Telegram inline keyboard and not PANAS.
+# ШПАНА stays one-time after the first HADS/BAI/BDI completion in app.py.
+
+
+async def send_starter_intro(message: Message, telegram_id: int) -> bool:
+    try:
+        for path, label, text in STARTER_INTRO_SCALES:
+            await message.answer(text, reply_markup=scale_menu(path, label))
+    except (TelegramForbiddenError, TelegramBadRequest) as exc:
+        log.warning("Не удалось отправить стартовые шкалы %s: %s", telegram_id, exc)
+        return False
+    except TelegramNetworkError:
+        log.exception("Сеть недоступна при отправке стартовых шкал %s", telegram_id)
+        return False
+    return True
+
+
 @dp.message(CommandStart())
 async def start(message: Message):
     user = message.from_user
@@ -134,6 +175,8 @@ async def start(message: Message):
     else:
         text = "Привет! Здесь можно вести дневник настроения и заполнять анкеты."
     await message.answer(text, reply_markup=menu())
+    if should_send_starter_intro(user.id) and await send_starter_intro(message, user.id):
+        mark_starter_intro_sent(user.id)
 
 
 async def _send_reminder(bot: Bot, telegram_id: int) -> bool:
@@ -272,7 +315,9 @@ async def main():
         raise RuntimeError("Set APP_URL to the current HTTPS tunnel URL in .env")
     logging.basicConfig(level=logging.INFO)
     init_db()
-    session = AiohttpSession(api = TelegramAPIServer.from_base(TELEGRAM_PROXY))
+    # TELEGRAM_PROXY is a Bot API host (TelegramAPIServer.from_base), not an HTTP proxy.
+    api_base = TELEGRAM_PROXY or "https://api.telegram.org"
+    session = AiohttpSession(api=TelegramAPIServer.from_base(api_base))
     reminder_task = None
     pills_task = None
     try:
