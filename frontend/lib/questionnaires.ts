@@ -7,6 +7,37 @@ export const DOMAIN_COLORS: Record<string, string> = {
   NA: "#b4533a",
 };
 
+export type PatientScaleLink = {
+  id: string;
+  href: string;
+  title: string;
+  blurb: string;
+};
+
+export const SUICIDE_RISK_SCALE: PatientScaleLink = {
+  id: "suicide-risk",
+  href: "/suicide-risk/",
+  title: "Оценка суицидального риска",
+  blurb: "Сначала заполните эту шкалу — остальные откроются после неё.",
+};
+
+/** Shown in Mini App after a completed ОСР. Telegram sends these on /start right after the ОСР intro. */
+export const STARTER_SCALES: PatientScaleLink[] = [
+  { id: "hads", href: "/hads/", title: "HADS", blurb: "Тревога и депрессия" },
+  { id: "bai", href: "/bai/", title: "BAI", blurb: "Тревога" },
+  { id: "bdi", href: "/bdi/", title: "BDI", blurb: "Депрессия" },
+];
+
+/** Telegram sends ШПАНА after the first of HADS/BAI/BDI; Mini App lists it with the other scales. */
+export const PANAS_SCALE: PatientScaleLink = {
+  id: "panas",
+  href: "/panas/",
+  title: "ШПАНА",
+  blurb: "Позитивный и негативный аффект",
+};
+
+export const POST_OSR_SCALES: PatientScaleLink[] = [...STARTER_SCALES, PANAS_SCALE];
+
 export function formatDay(iso: string) {
   const [year, month, day] = iso.slice(0, 10).split("-");
   if (!year || !month || !day) return iso;

@@ -41,6 +41,8 @@ from db import (
     write_pills_log,
     should_send_suicide_risk_intro,
     mark_suicide_risk_intro_sent,
+    should_send_starter_intro,
+    mark_starter_intro_sent,
     _utc_date,
     DocumentError,
     MAX_DOC_BYTES,
@@ -49,7 +51,7 @@ from db import (
     normalize_document_meta,
     save_patient_document,
 )
-from app import consume_invite
+from app import consume_invite, SCALES_INTRO
 from medication_notifications import (
     confirm_medication_dose,
     medication_reminder_loop,
@@ -150,7 +152,9 @@ def pills_menu(day: str):
 
 
 # Daily mood is the Mini App page /mood/, not a Telegram inline keyboard and not PANAS.
-# First linked /start sends only ОСР. HADS/BAI/BDI go out after a completed ОСР in app.py.
+# First linked /start sends ОСР, then immediately HADS/BAI/BDI. Repeat /start
+# only sends a missing intro once. Completing ОСР may still send HADS/BAI/BDI
+# if they were not sent at /start (patients who already received ОСР only).
 # ШПАНА stays one-time after the first HADS/BAI/BDI completion in app.py.
 # Pills-diary Mini App is one-time after a completed HADS in app.py (skipped if configured).
 
@@ -167,6 +171,19 @@ async def send_suicide_risk_intro(message: Message, telegram_id: int) -> bool:
     except TelegramNetworkError:
         log.exception("Сеть недоступна при отправке ОСР %s", telegram_id)
         return False
+    return True
+
+
+async def send_starter_intro(message: Message, telegram_id: int) -> bool:
+    for path, label, text in SCALES_INTRO:
+        try:
+            await message.answer(text, reply_markup=scale_menu(path, label))
+        except (TelegramForbiddenError, TelegramBadRequest) as exc:
+            log.warning("Не удалось отправить стартовые шкалы %s: %s", telegram_id, exc)
+            return False
+        except TelegramNetworkError:
+            log.exception("Сеть недоступна при отправке стартовых шкал %s", telegram_id)
+            return False
     return True
 
 
@@ -211,8 +228,12 @@ async def start(message: Message):
     else:
         text = "Привет! Здесь можно вести дневник настроения и заполнять анкеты."
     await message.answer(text, reply_markup=menu())
-    if should_send_suicide_risk_intro(user.id) and await send_suicide_risk_intro(message, user.id):
+    if should_send_suicide_risk_intro(user.id):
+        if not await send_suicide_risk_intro(message, user.id):
+            return
         mark_suicide_risk_intro_sent(user.id)
+    if should_send_starter_intro(user.id) and await send_starter_intro(message, user.id):
+        mark_starter_intro_sent(user.id)
 
 
 async def _send_reminder(bot: Bot, telegram_id: int) -> bool:

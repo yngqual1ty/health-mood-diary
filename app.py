@@ -512,7 +512,7 @@ def send_scales_intro(telegram_id: int) -> bool:
 
 
 def maybe_send_scales_intro(telegram_id: int) -> None:
-    """One-time HADS/BAI/BDI after the first completed ОСР. Not sent on /start."""
+    """Fallback HADS/BAI/BDI after first completed ОСР if they were not already sent on /start."""
     if not _telegram_api_url("sendMessage") or not _mini_app_url("hads"):
         log.warning("Стартовые шкалы: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
         return

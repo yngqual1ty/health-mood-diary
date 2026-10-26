@@ -442,8 +442,41 @@ def mark_suicide_risk_intro_sent(telegram_id, sent_at=None):
         )
 
 
+def should_send_starter_intro(telegram_id):
+    """True for a linked patient who has never received the HADS/BAI/BDI Mini App intros."""
+    with conn() as db:
+        row = db.execute(
+            """
+            SELECT COALESCE(u.role, 'patient') AS role, u.starter_intro_sent_at
+            FROM links l
+            LEFT JOIN users u ON u.telegram_id = l.patient_telegram_id
+            WHERE l.patient_telegram_id = ?
+            """,
+            (telegram_id,),
+        ).fetchone()
+    if not row or row["role"] == "doctor":
+        return False
+    return not row["starter_intro_sent_at"]
+
+
+def mark_starter_intro_sent(telegram_id, sent_at=None):
+    stamp = _utc_stamp(sent_at)
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        db.execute(
+            """
+            UPDATE users SET starter_intro_sent_at = ?
+            WHERE telegram_id = ? AND starter_intro_sent_at IS NULL
+            """,
+            (stamp, telegram_id),
+        )
+
+
 def claim_scales_intro(telegram_id, sent_at=None):
-    """True if this caller may send the one-time HADS/BAI/BDI intro (after ОСР)."""
+    """True if this caller may send HADS/BAI/BDI after completed ОСР (skipped if already sent on /start)."""
     stamp = _utc_stamp(sent_at)
     with conn() as db:
         db.execute(

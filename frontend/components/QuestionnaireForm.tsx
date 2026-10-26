@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { ScaleList } from "@/components/ScaleList";
 import { api } from "@/lib/api";
+import { POST_OSR_SCALES } from "@/lib/questionnaires";
 import type { Me, Questionnaire } from "@/lib/types";
 
 const REQUIRES_SUICIDE_RISK = new Set(["hads", "bai", "bdi", "panas"]);
@@ -46,12 +48,14 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
   const [status, setStatus] = useState("");
   const [saving, setSaving] = useState(false);
   const [blocked, setBlocked] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setData(null);
     setBlocked(false);
     setStatus("");
+    setJustSaved(false);
     async function load() {
       try {
         if (REQUIRES_SUICIDE_RISK.has(questionnaireId)) {
@@ -114,6 +118,7 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
       const next = await api<Questionnaire>(`/api/questionnaires/${questionnaireId}`);
       setData(next);
       setAnswers({});
+      setJustSaved(true);
       setStatus("Ответы сохранены. Сегодняшний результат появится на графике со следующего дня.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Не удалось сохранить.");
@@ -122,10 +127,26 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
     }
   }
 
+  const showNextScales = questionnaireId === "suicide-risk" && justSaved;
+
   return (
     <>
       <h1>{data.title}</h1>
       {data.description && <p className="muted">{data.description}</p>}
+      {showNextScales && (
+        <>
+          <ScaleList
+            title="Следующие шкалы"
+            hint="Пожалуйста, заполните три стартовые шкалы. Это не диагноз — так проще отслеживать самочувствие вместе с врачом."
+            items={POST_OSR_SCALES}
+          />
+          <p>
+            <Link href="/" className="quiet-link">
+              К результатам
+            </Link>
+          </p>
+        </>
+      )}
       {data.latest && (
         <section className="card">
           <h2>Последний результат</h2>

@@ -318,6 +318,48 @@ textarea, input[type="text"], input[type="number"] {
   text-underline-offset: 3px;
 }
 
+.scale-list {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+
+.scale-list h2 {
+  margin-bottom: 0;
+}
+
+.scale-list .muted {
+  margin: 0;
+}
+
+a.scale-card {
+  display: block;
+  margin: 0;
+  padding: 16px 18px;
+  border: 1px solid rgba(216, 231, 230, 0.95);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+a.scale-card strong {
+  display: block;
+  color: var(--teal-dark);
+  font-size: 16px;
+}
+
+a.scale-card span {
+  display: block;
+  margin-top: 4px;
+  color: var(--hint);
+  font-size: 13px;
+}
+
+a.scale-card.priority {
+  border-color: var(--teal);
+  background: var(--soft-teal);
+}
+
 .mood-card {
   margin: 16px 0;
   padding: 28px 26px 24px;
