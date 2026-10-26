@@ -2,11 +2,13 @@ services:
   api:
     build: .
     env_file: .env
+    # Serves /api and the Next.js export from frontend/out (/, /hads/, /_next/static, …).
     networks:
       default:
       web:
         aliases:
           - mood-diary-api
+
     environment:
       DATABASE_PATH: /data/mood.sqlite3
 

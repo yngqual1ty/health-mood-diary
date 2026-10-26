@@ -2,8 +2,14 @@ import json
 import logging
 import os
 import secrets
+<<<<<<< HEAD
 import sqlite3
 from datetime import date, datetime, timedelta
+=======
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta
+>>>>>>> 2d85a3a549c2f97cf0b657dfa193a69c2cf8dd4f
 from pathlib import Path
 from urllib.parse import unquote
 from uuid import uuid4
@@ -16,16 +22,75 @@ load_dotenv(BASE_DIR / ".env", override=False)
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from db import conn, init_db
+from db import (
+    conn,
+    init_db,
+    get_regimen,
+    upsert_regimen,
+    list_pills_log,
+    write_pills_log,
+    PILLS_TAKEN_VALUES,
+    _utc_date,
+    claim_panas_intro,
+    release_panas_intro,
+    claim_scales_intro,
+    release_scales_intro,
+    claim_hotline_notice,
+    release_hotline_notice,
+    has_completed_suicide_risk,
+)
 from auth import validate_init_data, AuthError
 from medication_notifications import APP_TIMEZONE
 
+log = logging.getLogger(__name__)
+STARTER_QUESTIONNAIRES = frozenset({"hads", "bai", "bdi"})
+GATED_AFTER_OSR = frozenset({"hads", "bai", "bdi", "panas"})
+ALERT_QUESTIONNAIRES = frozenset({"suicide-risk", "hads", "bdi"})
+SCALES_INTRO = (
+    (
+        "hads",
+        "Заполнить HADS",
+        "Пожалуйста, заполните три стартовые шкалы. Это не диагноз — "
+        "так проще отслеживать самочувствие вместе с врачом.\n\n"
+        "HADS — тревога и депрессия.",
+    ),
+    (
+        "bai",
+        "Заполнить BAI",
+        "BAI — тревога. Заполните, когда будет удобно.",
+    ),
+    (
+        "bdi",
+        "Заполнить BDI",
+        "BDI — депрессия. Вместе с остальными шкалами её увидит ваш врач.",
+    ),
+)
+# ОСР chart score is C-SSRS max 0–5 and cannot reach 18. Doctor alert uses
+# the sum of all nine item values (max 23). See questionnaires.json scoring.rules.
+OSR_SUM_THRESHOLD = 18
+HADS_D_THRESHOLD = 11
+BDI_THRESHOLD = 30
+PANAS_INTRO_TEXT = (
+    "Следующая короткая шкала — ШПАНА\n\n"
+    "Она помогает отметить, насколько в последнее время были выражены "
+    "положительные и отрицательные переживания. Это не диагноз и не требует "
+    "срочных действий.\n\n"
+    "Заполните, когда будет удобно — обычно это занимает несколько минут."
+)
+HOTLINE_TEXT = (
+    "Если Вы чувствуете необходимость в экстренной помощи - телефон доверия • "
+    "ФГБУ «НМИЦ ПН им. В.П. Сербского» Минздрава России. "
+    "Горячая линия помощи. Круглосуточно 8 (495) 637-70-70"
+)
+
 app = FastAPI(title="Mood Diary MVP")
-WEB_DIR = Path(__file__).parent / "web"
+FRONTEND_DIR = BASE_DIR / "frontend" / "out"
 INVITE_TTL_HOURS = 24
 ADMIN_DOCTOR_ID = int(os.getenv("ADMIN_DOCTOR_ID", "0"))
+DEV_TELEGRAM_ID = int(os.getenv("DEV_TELEGRAM_ID", "0"))
 QUESTIONNAIRES_PATH = BASE_DIR / "questionnaires.json"
 DOCUMENTS_DIR = Path(
     os.getenv("PATIENT_DOCUMENTS_DIR", str(BASE_DIR / "patient_documents"))
@@ -72,18 +137,29 @@ def score_questionnaire(definition, answers):
                         if item.get("domain") == domain and item.get("id") in values)
             domains[domain] = {"score": total, "interpretation": interpret_score(total, config.get("bands", []))}
         return {"type": "domains", "domains": domains}
-    if scoring.get("type") == "sum":
-        total = sum(values[item["id"]] for item in definition.get("items", []) if item.get("id") in values)
+    if scoring.get("type") in {"sum", "max"}:
+        include_domains = scoring.get("include_domains")
+        item_scores = [
+            values[item["id"]]
+            for item in definition.get("items", [])
+            if item.get("id") in values
+            and (not include_domains or item.get("domain") in include_domains)
+        ]
+        total = max(item_scores, default=0) if scoring.get("type") == "max" else sum(item_scores)
         return {"type": "sum", "score": total, "interpretation": interpret_score(total, scoring.get("bands", []))}
     return {}
 
 
+def frontend_index():
+    index = FRONTEND_DIR / "index.html"
+    if not index.exists():
+        raise HTTPException(status_code=500, detail="Интерфейс не собран. Выполните npm run build в frontend/.")
+    return FileResponse(index, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+
+
 @app.get("/")
 def index():
-    return FileResponse(
-        WEB_DIR / "index.html",
-        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
-    )
+    return frontend_index()
 
 
 app.add_middleware(
@@ -116,6 +192,13 @@ def current_user(authorization: str | None):
         if authorization and authorization.lower().startswith("tma ")
         else ""
     )
+    if not raw.strip() and DEV_TELEGRAM_ID > 0:
+        with conn() as db:
+            db.execute(
+                "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+                (DEV_TELEGRAM_ID,),
+            )
+        return DEV_TELEGRAM_ID
     try:
         data = validate_init_data(raw)
     except AuthError as e:
@@ -185,6 +268,7 @@ class MedicationIn(BaseModel):
     instructions: str = Field(default="", max_length=1000)
 
 
+<<<<<<< HEAD
 def normalized_medication_times(times: list[str]) -> list[str]:
     normalized = sorted(set(value.strip() for value in times))
     if len(normalized) != len(times):
@@ -206,6 +290,24 @@ def normalized_medication_times(times: list[str]) -> list[str]:
             detail="Укажите время приёма в формате ЧЧ:ММ.",
         )
     return normalized
+=======
+class PillItemIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    time: str = Field(default="", max_length=40)
+    note: str = Field(default="", max_length=200)
+
+
+class PillsRegimenIn(BaseModel):
+    items: list[PillItemIn] = Field(min_length=1, max_length=20)
+    confirm: bool = False
+
+
+class PillsLogIn(BaseModel):
+    taken: str = Field(pattern="^(yes|no|partial)$")
+    note: str = Field(default="", max_length=200)
+    date: str | None = None
+
+>>>>>>> 2d85a3a549c2f97cf0b657dfa193a69c2cf8dd4f
 
 def require_doctor(uid: int):
     with conn() as db:
@@ -228,6 +330,239 @@ def require_patient(uid: int):
         ).fetchone()
     if not user or user["role"] != "patient":
         raise HTTPException(status_code=403, detail="Дневник доступен только пациенту.")
+
+
+def _telegram_api_url(method: str) -> str | None:
+    token = os.getenv("BOT_TOKEN", "").strip()
+    if not token:
+        return None
+    # TELEGRAM_PROXY is a Bot API host (TelegramAPIServer.from_base), not an HTTP proxy.
+    base = os.getenv("TELEGRAM_PROXY", "").strip() or "https://api.telegram.org"
+    return f"{base.rstrip('/')}/bot{token}/{method}"
+
+
+def _mini_app_url(path: str) -> str | None:
+    app_url = os.getenv("APP_URL", "").strip()
+    if not app_url.startswith("https://"):
+        return None
+    return f"{app_url.rstrip('/')}/{path.strip('/')}/"
+
+
+def send_telegram_message(chat_id: int, text: str, reply_markup: dict | None = None) -> bool:
+    url = _telegram_api_url("sendMessage")
+    if not url:
+        return False
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode(),
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read() or b"{}")
+        return bool(isinstance(data, dict) and data.get("ok"))
+    except urllib.error.HTTPError as exc:
+        log.warning("Telegram вернул %s при отправке сообщения %s", exc.code, chat_id)
+        return False
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        log.warning("Не удалось отправить сообщение %s", chat_id)
+        return False
+
+
+def send_panas_intro(telegram_id: int) -> bool:
+    web_app_url = _mini_app_url("panas")
+    if not web_app_url:
+        return False
+    return send_telegram_message(
+        telegram_id,
+        PANAS_INTRO_TEXT,
+        {
+            "inline_keyboard": [[
+                {"text": "Заполнить ШПАНА", "web_app": {"url": web_app_url}},
+            ]],
+        },
+    )
+
+
+def maybe_send_panas_intro(telegram_id: int) -> None:
+    """One-time ШПАНА after first HADS/BAI/BDI. Daily mood is Mini App /mood/, not PANAS."""
+    if not _telegram_api_url("sendMessage") or not _mini_app_url("panas"):
+        log.warning("ШПАНА: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
+        return
+    if not claim_panas_intro(telegram_id):
+        return
+    if not send_panas_intro(telegram_id):
+        release_panas_intro(telegram_id)
+
+
+def send_scales_intro(telegram_id: int) -> bool:
+    for path, label, text in SCALES_INTRO:
+        web_app_url = _mini_app_url(path)
+        if not web_app_url:
+            return False
+        if not send_telegram_message(
+            telegram_id,
+            text,
+            {
+                "inline_keyboard": [[
+                    {"text": label, "web_app": {"url": web_app_url}},
+                ]],
+            },
+        ):
+            return False
+    return True
+
+
+def maybe_send_scales_intro(telegram_id: int) -> None:
+    """One-time HADS/BAI/BDI after the first completed ОСР. Not sent on /start."""
+    if not _telegram_api_url("sendMessage") or not _mini_app_url("hads"):
+        log.warning("Стартовые шкалы: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
+        return
+    if not claim_scales_intro(telegram_id):
+        return
+    if not send_scales_intro(telegram_id):
+        release_scales_intro(telegram_id)
+
+
+def questionnaire_item_sum(definition, answers) -> int:
+    """Sum of numeric values for every item in the definition (not C-SSRS max)."""
+    values = {str(key): int(value) for key, value in answers.items() if str(value).lstrip("-").isdigit()}
+    return sum(
+        values[item["id"]]
+        for item in (definition or {}).get("items", [])
+        if item.get("id") in values
+    )
+
+
+def patient_display_label(user_row, telegram_id: int) -> str:
+    if not user_row:
+        return str(telegram_id)
+    name = (user_row["display_name"] or "").strip()
+    if not name:
+        name = " ".join(
+            part.strip()
+            for part in (user_row["first_name"] or "", user_row["last_name"] or "")
+            if part and part.strip()
+        )
+    return name or str(telegram_id)
+
+
+def doctor_alert_for_result(questionnaire_id: str, definition, answers, result):
+    """Doctor-alert payload if this completed result crosses the scale threshold.
+
+    HADS: domain D only (anxiety alone does not alert).
+    BDI: total score.
+    ОСР: sum of all item values, because stored/chart score is C-SSRS max 0–5.
+    """
+    if questionnaire_id == "suicide-risk":
+        score = questionnaire_item_sum(definition, answers)
+        if score >= OSR_SUM_THRESHOLD:
+            return {
+                "scale": "Оценка суицидального риска (ОСР)",
+                "score_line": (
+                    f"Балл: {score} (сумма пунктов; уведомление при "
+                    f"{OSR_SUM_THRESHOLD} и выше)"
+                ),
+            }
+        return None
+    if questionnaire_id == "hads":
+        domain = ((result or {}).get("domains") or {}).get("D") or {}
+        try:
+            score = int(domain.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        if score >= HADS_D_THRESHOLD:
+            interp = str(domain.get("interpretation") or "").strip()
+            extra = f" — {interp}" if interp else ""
+            return {
+                "scale": "HADS, подшкала депрессии (D)",
+                "score_line": f"Балл: {score}{extra}",
+            }
+        return None
+    if questionnaire_id == "bdi":
+        try:
+            score = int((result or {}).get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        if score >= BDI_THRESHOLD:
+            interp = str((result or {}).get("interpretation") or "").strip()
+            extra = f" — {interp}" if interp else ""
+            return {
+                "scale": "BDI (Бек)",
+                "score_line": f"Балл: {score}{extra}",
+            }
+        return None
+    return None
+
+
+def _doctor_alert_text(patient_label: str, alert: dict, stamp: str) -> str:
+    return (
+        f"Пациент: {patient_label}\n\n"
+        f"Шкала: {alert['scale']}\n"
+        f"{alert['score_line']}\n"
+        f"Время: {stamp}\n\n"
+        "Это сигнал по заполненной шкале, а не диагноз. "
+        "Пожалуйста, откройте карту пациента в Mini App."
+    )
+
+
+def send_doctor_scale_alert(doctor_id: int, patient_label: str, alert: dict, stamp: str) -> bool:
+    text = _doctor_alert_text(patient_label, alert, stamp)
+    doctor_url = _mini_app_url("doctor")
+    markup = None
+    if doctor_url:
+        markup = {
+            "inline_keyboard": [[
+                {"text": "Открыть карту пациента", "web_app": {"url": doctor_url}},
+            ]],
+        }
+    return send_telegram_message(doctor_id, text, markup)
+
+
+def maybe_notify_scale_alerts(patient_id: int, questionnaire_id: str, definition, answers, result) -> None:
+    """After a completed ОСР / HADS / BDI: doctor if threshold crossed, else patient hotline."""
+    if questionnaire_id not in ALERT_QUESTIONNAIRES:
+        return
+    with conn() as db:
+        user = db.execute(
+            """
+            SELECT role, display_name, first_name, last_name
+            FROM users WHERE telegram_id = ?
+            """,
+            (patient_id,),
+        ).fetchone()
+        link = db.execute(
+            "SELECT doctor_telegram_id FROM links WHERE patient_telegram_id = ?",
+            (patient_id,),
+        ).fetchone()
+    if not user or user["role"] == "doctor":
+        return
+    alert = doctor_alert_for_result(questionnaire_id, definition, answers, result)
+    if alert:
+        if not link:
+            return
+        if not _telegram_api_url("sendMessage"):
+            log.warning("Уведомление врачу: нет BOT_TOKEN, пропуск")
+            return
+        stamp = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC")
+        send_doctor_scale_alert(
+            link["doctor_telegram_id"],
+            patient_display_label(user, patient_id),
+            alert,
+            stamp,
+        )
+        return
+    if not _telegram_api_url("sendMessage"):
+        log.warning("Горячая линия: нет BOT_TOKEN, пропуск")
+        return
+    if not claim_hotline_notice(patient_id, questionnaire_id):
+        return
+    if not send_telegram_message(patient_id, HOTLINE_TEXT):
+        release_hotline_notice(patient_id, questionnaire_id)
 
 
 @app.get("/api/me")
@@ -253,6 +588,7 @@ def me(authorization: str | None = Header(default=None)):
         "display_name": user["display_name"],
         "linked": bool(link),
         "doctor_telegram_id": link["doctor_telegram_id"] if link else None,
+        "suicide_risk_completed": has_completed_suicide_risk(uid),
     }
 
 
@@ -269,6 +605,97 @@ def create_mood(body: MoodIn, authorization: str | None = Header(default=None)):
             (uid, body.score, ", ".join(emotions), note),
         )
     return {"ok": True}
+
+
+def _normalize_regimen_items(items: list[PillItemIn]):
+    normalized = []
+    for item in items:
+        name = item.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Укажите название лекарства.")
+        time = item.time.strip()
+        note = item.note.strip()
+        entry = {"name": name}
+        if time:
+            entry["time"] = time
+        if note:
+            entry["note"] = note
+        normalized.append(entry)
+    if not normalized:
+        raise HTTPException(status_code=422, detail="Добавьте хотя бы одно лекарство.")
+    return normalized
+
+
+def _regimen_payload(row):
+    if not row:
+        return {"configured": False, "items": []}
+    return {
+        "configured": True,
+        "items": row["items"],
+        "created_at": row["created_at"],
+    }
+
+
+def _parse_log_date(raw: str | None):
+    today = _utc_date()
+    day = (raw or today).strip()
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Дата должна быть в формате YYYY-MM-DD.") from exc
+    if day > today:
+        raise HTTPException(status_code=422, detail="Нельзя отметить будущий день.")
+    return day
+
+
+@app.get("/api/pills")
+def get_pills(authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    return _regimen_payload(get_regimen(uid))
+
+
+@app.post("/api/pills")
+def save_pills(body: PillsRegimenIn, authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    existing = get_regimen(uid)
+    if existing and not body.confirm:
+        raise HTTPException(
+            status_code=409,
+            detail="Схема уже заполнена. Повторное сохранение только после подтверждения.",
+        )
+    saved = upsert_regimen(uid, _normalize_regimen_items(body.items))
+    return _regimen_payload(saved)
+
+
+@app.post("/api/pills/log")
+def save_pills_log(body: PillsLogIn, authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    if not get_regimen(uid):
+        raise HTTPException(status_code=409, detail="Сначала заполните схему лекарств.")
+    if body.taken not in PILLS_TAKEN_VALUES:
+        raise HTTPException(status_code=422, detail="Отметьте: yes, no или partial.")
+    day = _parse_log_date(body.date)
+    row, _created = write_pills_log(uid, day, body.taken, body.note, overwrite=True)
+    return {"ok": True, "item": row}
+
+
+@app.get("/api/doctor/patients/{patient_id}/pills")
+def doctor_patient_pills(
+    patient_id: int, authorization: str | None = Header(default=None)
+):
+    uid = current_user(authorization)
+    require_doctor(uid)
+    with conn() as db:
+        ensure_patient_link(db, uid, patient_id)
+    regimen = get_regimen(patient_id)
+    since = (datetime.utcnow() - timedelta(days=29)).strftime("%Y-%m-%d")
+    log = list_pills_log(patient_id, since, limit=30)
+    payload = _regimen_payload(regimen)
+    payload["log"] = log
+    return payload
 
 
 @app.get("/api/moods")
@@ -297,10 +724,7 @@ def list_questionnaires(authorization: str | None = Header(default=None)):
             (uid, *definitions.keys()),
         ).fetchall()
     latest = {}
-    completed = set()
     for row in rows:
-        if row["status"] == "completed":
-            completed.add(row["questionnaire_id"])
         if row["questionnaire_id"] not in latest:
             item = dict(row)
             item["result"] = json.loads(item["result"] or "{}")
@@ -309,8 +733,110 @@ def list_questionnaires(authorization: str | None = Header(default=None)):
         "items": [
             {**definition, "latest": latest.get(questionnaire_id)}
             for questionnaire_id, definition in definitions.items()
-            if questionnaire_id not in completed
+            if definition.get("available")
         ]
+    }
+
+
+def parse_answer_row(row) -> dict:
+    item = dict(row)
+    for key in ("payload", "result"):
+        if key not in item:
+            continue
+        try:
+            item[key] = json.loads(item[key] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            item[key] = {}
+    return item
+
+
+def series_from_answers(answers: list[dict], definitions: dict) -> dict:
+    """One latest completed attempt per calendar day for each questionnaire."""
+    by_id: dict[str, dict[str, dict]] = {}
+    for item in answers:
+        if item.get("status") != "completed":
+            continue
+        qid = item["questionnaire_id"]
+        if qid not in definitions:
+            continue
+        day = (item.get("created_at") or "")[:10]
+        if not day:
+            continue
+        by_id.setdefault(qid, {})[day] = item
+    series = {}
+    for qid, by_day in by_id.items():
+        definition = definitions[qid]
+        scoring = definition.get("scoring") or {}
+        points = []
+        for day in sorted(by_day):
+            result = by_day[day].get("result") or {}
+            point = {"date": day, "created_at": by_day[day].get("created_at")}
+            if result.get("type") == "sum":
+                point["score"] = result.get("score")
+                point["interpretation"] = result.get("interpretation")
+            elif result.get("type") == "domains":
+                point["domains"] = result.get("domains") or {}
+            points.append(point)
+        series[qid] = {
+            "id": qid,
+            "title": definition.get("title", qid),
+            "scoring": scoring,
+            "points": points,
+        }
+    return series
+
+
+@app.get("/api/questionnaires/{questionnaire_id}")
+def get_questionnaire(questionnaire_id: str, authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    definition = questionnaire_definitions().get(questionnaire_id)
+    if not definition or not definition.get("available"):
+        raise HTTPException(status_code=404, detail="Опросник не найден или недоступен.")
+    with conn() as db:
+        rows = db.execute(
+            """SELECT questionnaire_id, payload, status, result, created_at FROM answers
+               WHERE patient_telegram_id = ? AND questionnaire_id = ?
+               ORDER BY id DESC LIMIT 60""",
+            (uid, questionnaire_id),
+        ).fetchall()
+    history = [parse_answer_row(row) for row in rows]
+    return {**definition, "latest": history[0] if history else None, "history": history}
+
+
+@app.get("/api/me/results")
+def my_results(authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    definitions = {
+        qid: definition
+        for qid, definition in questionnaire_definitions().items()
+        if definition.get("available")
+    }
+    with conn() as db:
+        moods = [
+            dict(row)
+            for row in db.execute(
+                """SELECT score, emotions, created_at FROM moods
+                   WHERE patient_telegram_id = ? ORDER BY id ASC""",
+                (uid,),
+            ).fetchall()
+            if (row["created_at"] or "")[:10] < today
+        ]
+        answers = [
+            parse_answer_row(row)
+            for row in db.execute(
+                """SELECT questionnaire_id, payload, status, result, created_at FROM answers
+                   WHERE patient_telegram_id = ? ORDER BY id ASC""",
+                (uid,),
+            ).fetchall()
+            if (row["created_at"] or "")[:10] < today
+        ]
+    return {
+        "today": today,
+        "moods": moods,
+        "series": series_from_answers(answers, definitions),
     }
 
 
@@ -923,6 +1449,11 @@ def delete_own_patient_document(
 def save_answers(body: AnswersIn, authorization: str | None = Header(default=None)):
     uid = current_user(authorization)
     require_patient(uid)
+    if body.questionnaire_id in GATED_AFTER_OSR and not has_completed_suicide_risk(uid):
+        raise HTTPException(
+            status_code=403,
+            detail="Сначала заполните оценку суицидального риска.",
+        )
     definition = questionnaire_definitions().get(body.questionnaire_id)
     result = {}
     if body.questionnaire_id == "daily-checkin-v1":
@@ -966,6 +1497,12 @@ def save_answers(body: AnswersIn, authorization: str | None = Header(default=Non
             (uid, body.questionnaire_id, json.dumps(body.answers, ensure_ascii=False),
              body.status, json.dumps(result, ensure_ascii=False)),
         )
+    if body.questionnaire_id == "suicide-risk" and body.status == "completed":
+        maybe_send_scales_intro(uid)
+    if body.questionnaire_id in STARTER_QUESTIONNAIRES and body.status == "completed":
+        maybe_send_panas_intro(uid)
+    if body.status == "completed":
+        maybe_notify_scale_alerts(uid, body.questionnaire_id, definition, body.answers, result)
     return {"ok": True, "status": body.status, "result": result}
 
 
@@ -1032,3 +1569,23 @@ def consume_invite(patient_id: int, token: str) -> bool:
             (patient_id, invite["doctor_telegram_id"]),
         )
         return True
+
+
+@app.get("/{full_path:path}")
+def frontend(full_path: str):
+    if full_path.startswith("api/") or full_path == "api":
+        raise HTTPException(status_code=404, detail="Not found")
+    file = FRONTEND_DIR / full_path
+    if file.is_file():
+        return FileResponse(file)
+    nested = FRONTEND_DIR / full_path / "index.html"
+    if nested.is_file():
+        return FileResponse(nested, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+    html = FRONTEND_DIR / f"{full_path}.html"
+    if html.is_file():
+        return FileResponse(html, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+    return frontend_index()
+
+
+if (FRONTEND_DIR / "_next").is_dir():
+    app.mount("/_next", StaticFiles(directory=FRONTEND_DIR / "_next"), name="next-assets")

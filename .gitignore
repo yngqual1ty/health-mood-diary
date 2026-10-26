@@ -18,5 +18,9 @@ uploads/
 
 guidelines/.cache/
 .idea
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
 .vscode/
 *.log
