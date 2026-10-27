@@ -6,9 +6,8 @@ import { ScaleList } from "@/components/ScaleList";
 import { api } from "@/lib/api";
 import { STARTER_SCALES, type PatientScaleLink } from "@/lib/questionnaires";
 import { formatAppDateTime, formatAppRelative } from "@/lib/timezone";
-import type { Me, Questionnaire } from "@/lib/types";
+import type { Questionnaire } from "@/lib/types";
 
-const REQUIRES_SUICIDE_RISK = new Set(["hads", "bai", "bdi", "panas"]);
 const THANKS_TEXT = "Спасибо, эти шкалы помогут тебе предметно общаться на приеме";
 
 async function remainingAfterSubmit(completedId: string): Promise<PatientScaleLink[]> {
@@ -65,7 +64,6 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [status, setStatus] = useState("");
   const [saving, setSaving] = useState(false);
-  const [blocked, setBlocked] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const [savedAt, setSavedAt] = useState("");
   const [remainingScales, setRemainingScales] = useState<PatientScaleLink[]>([]);
@@ -73,20 +71,12 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
   useEffect(() => {
     let cancelled = false;
     setData(null);
-    setBlocked(false);
     setStatus("");
     setJustSaved(false);
     setSavedAt("");
     setRemainingScales([]);
     async function load() {
       try {
-        if (REQUIRES_SUICIDE_RISK.has(questionnaireId)) {
-          const me = await api<Me>("/api/me");
-          if (!me.suicide_risk_completed) {
-            if (!cancelled) setBlocked(true);
-            return;
-          }
-        }
         const next = await api<Questionnaire>(`/api/questionnaires/${questionnaireId}`);
         if (!cancelled) setData(next);
       } catch (error) {
@@ -100,22 +90,6 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
       cancelled = true;
     };
   }, [questionnaireId]);
-
-  if (blocked) {
-    return (
-      <>
-        <h1>Сначала оценка суицидального риска</h1>
-        <section className="card">
-          <p>Эта шкала откроется после заполнения оценки суицидального риска.</p>
-          <p>
-            <Link href="/suicide-risk/" className="quiet-link">
-              Открыть оценку суицидального риска
-            </Link>
-          </p>
-        </section>
-      </>
-    );
-  }
 
   if (!data && status) return <div className="card">{status}</div>;
   if (!data) return <div className="card muted">Загрузка опросника…</div>;

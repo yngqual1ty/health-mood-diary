@@ -63,7 +63,6 @@ import clinical_rag
 
 log = logging.getLogger(__name__)
 STARTER_QUESTIONNAIRES = frozenset({"hads", "bai", "bdi"})
-GATED_AFTER_OSR = frozenset({"hads", "bai", "bdi", "panas"})
 ALERT_QUESTIONNAIRES = frozenset({"suicide-risk", "hads", "bdi"})
 SCALES_INTRO_TEXT = (
     "Ниже я отправил тебе 3 дополнительных входных шкалы, они измерят твой уровень депрессии и тревоги.\n\n"
@@ -1687,11 +1686,6 @@ def treatment_options(
 def save_answers(body: AnswersIn, authorization: str | None = Header(default=None)):
     uid = current_user(authorization)
     require_patient(uid)
-    if body.questionnaire_id in GATED_AFTER_OSR and not suicide_risk_unblocked(uid):
-        raise HTTPException(
-            status_code=403,
-            detail="Сначала заполните оценку суицидального риска.",
-        )
     definition = questionnaire_definitions().get(body.questionnaire_id)
     result = {}
     if body.questionnaire_id == "daily-checkin-v1":

@@ -505,7 +505,7 @@ def has_skipped_suicide_risk(telegram_id):
 
 
 def suicide_risk_unblocked(telegram_id):
-    """True when Mini App HADS/BDI/BAI/ШПАНА may open: completed or skipped ОСР."""
+    """True if ОСР was completed or skipped. Telegram skip-button and 3-scales intro order, not Mini App access."""
     return has_completed_suicide_risk(telegram_id) or has_skipped_suicide_risk(telegram_id)
 
 

@@ -128,7 +128,7 @@ def suicide_risk_intro_menu():
         raise RuntimeError("APP_URL must be a valid HTTPS URL in .env")
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text="Оценка суицидального риска",
+            text="Входная анкета",
             web_app=WebAppInfo(url=app_path("suicide-risk")),
         )],
         [InlineKeyboardButton(text=SKIP_BUTTON_TEXT, callback_data=SKIP_CALLBACK_OSR)],
@@ -178,8 +178,9 @@ def pills_menu(day: str):
 
 # Daily mood is the Mini App page /mood/, not a Telegram inline keyboard and not PANAS.
 # Patient /start (including invite, including already linked): always greeting + ОСР
-# (Mini App + «Пропустить»). HADS/BAI/BDI wait until completed or skipped ОСР in
-# app.py and are not sent on /start. Doctors /start do not get this patient pack.
+# (Mini App + «Пропустить»). The 3-scales Telegram message waits until completed
+# or skipped ОСР and is not sent on /start. Mini App HADS/BAI/BDI/ШПАНА are not
+# blocked on ОСР. Doctors /start do not get this patient pack.
 # ШПАНА stays one-time after the first HADS/BAI/BDI completion in app.py.
 # Pills-diary Mini App is one-time after a completed HADS in app.py (skipped if configured).
 
@@ -243,7 +244,7 @@ async def start(message: Message):
 
 @dp.callback_query(F.data == SKIP_CALLBACK_OSR)
 async def skip_osr_callback(callback: CallbackQuery):
-    """Skip ОСР: unblock HADS/BDI/BAI, send below-threshold follow-up, no doctor alert."""
+    """Skip ОСР: record skip, send 3-scales follow-up, no doctor alert."""
     user = callback.from_user
     if user is None:
         await callback.answer("Не удалось определить пользователя.", show_alert=True)
