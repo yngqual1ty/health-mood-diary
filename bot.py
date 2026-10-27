@@ -24,7 +24,15 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
 )
 from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    WebAppInfo,
+)
 
 try:
     from aiogram.enums import ContentType
@@ -147,6 +155,27 @@ def reminder_menu():
 
 def doctor_menu():
     return scale_menu("doctor", "Открыть дашборд")
+
+
+def persistent_bot_menu():
+    """Reply keyboard Mini App buttons (same URLs as inline web_app). HTTPS APP_URL required."""
+    if not APP_URL.startswith("https://"):
+        raise RuntimeError("APP_URL must be a valid HTTPS URL in .env")
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Оценить настроение", web_app=WebAppInfo(url=app_path("mood")))],
+            [
+                KeyboardButton(text="Дневник сна", web_app=WebAppInfo(url=app_path("sleep"))),
+                KeyboardButton(text="Дневник таблеток", web_app=WebAppInfo(url=app_path("pills-diary"))),
+            ],
+            [
+                KeyboardButton(text="Указать аллергии", web_app=WebAppInfo(url=app_path("allergies"))),
+                KeyboardButton(text=SEND_CONCLUSION_BUTTON),
+            ],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 # Daily pills check-in uses APP_TIMEZONE calendar dates. After PILLS_CHECKIN_HOUR
@@ -527,7 +556,11 @@ async def send_conclusion_hint(message: Message):
     if not is_linked_patient(user.id):
         await message.answer(DOC_NEED_INVITE_TEXT)
         return
-    await message.answer(DOC_UPLOAD_HINT_TEXT)
+    try:
+        reply_markup = persistent_bot_menu()
+    except RuntimeError:
+        reply_markup = None
+    await message.answer(DOC_UPLOAD_HINT_TEXT, reply_markup=reply_markup)
 
 
 @dp.message(F.content_type.in_({ContentType.DOCUMENT, ContentType.PHOTO}))
