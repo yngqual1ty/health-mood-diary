@@ -1868,8 +1868,6 @@ def save_answers(body: AnswersIn, authorization: str | None = Header(default=Non
         maybe_send_osr_patient_followup(uid)
     if body.questionnaire_id in STARTER_QUESTIONNAIRES and body.status == "completed":
         maybe_send_panas_intro(uid)
-    if body.questionnaire_id == "hads" and body.status == "completed":
-        maybe_send_pills_intro(uid)
     if body.questionnaire_id in STARTER_QUESTIONNAIRES and body.status == "completed":
         maybe_send_scales_repeat_hint(uid)
     if body.status == "completed":
