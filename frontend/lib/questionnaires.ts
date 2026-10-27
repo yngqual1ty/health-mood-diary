@@ -21,7 +21,7 @@ export const SUICIDE_RISK_SCALE: PatientScaleLink = {
   blurb: "Сначала заполните эту шкалу — остальные откроются после неё.",
 };
 
-/** Shown in Mini App after a completed ОСР. Telegram sends these on /start right after the ОСР intro. */
+/** Shown in Mini App immediately after a completed ОСР. Telegram still sends these once as well. */
 export const STARTER_SCALES: PatientScaleLink[] = [
   { id: "hads", href: "/hads/", title: "HADS", blurb: "Тревога и депрессия" },
   { id: "bai", href: "/bai/", title: "BAI", blurb: "Тревога" },

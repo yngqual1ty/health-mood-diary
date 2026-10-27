@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, apiBlob, displayName } from "@/lib/api";
 import { appToday, lastAppDays } from "@/lib/timezone";
-import type { Answer, DoctorPills, Mood, Patient, PatientDocument, Questionnaire, ResultSeries, TreatmentResponse } from "@/lib/types";
+import type { Allergies, Answer, DoctorPills, Mood, Patient, PatientDocument, Questionnaire, ResultSeries, TreatmentResponse } from "@/lib/types";
 import { ResultsCharts } from "./ResultsCharts";
 
 export function DoctorPanel() {
@@ -12,6 +12,7 @@ export function DoctorPanel() {
   const [moods, setMoods] = useState<Mood[]>([]);
   const [answers, setAnswers] = useState<Answer[]>([]);
   const [pills, setPills] = useState<DoctorPills | null>(null);
+  const [allergies, setAllergies] = useState<Allergies | null>(null);
   const [documents, setDocuments] = useState<PatientDocument[]>([]);
   const [meta, setMeta] = useState<Record<string, Questionnaire>>({});
   const [invite, setInvite] = useState("");
@@ -36,21 +37,24 @@ export function DoctorPanel() {
     setName(displayName(patient));
     setTreatment(null);
     setPills(null);
+    setAllergies(null);
     setDocuments([]);
     setStatus("");
     try {
-      const [moodData, answerData, pillsData, docsData] = await Promise.all([
+      const [moodData, answerData, pillsData, allergiesData, docsData] = await Promise.all([
         api<{ items: Mood[] }>(`/api/doctor/patients/${patient.telegram_id}/moods`),
         api<{ items: Answer[]; questionnaires: Record<string, Questionnaire> }>(
           `/api/doctor/patients/${patient.telegram_id}/answers`,
         ),
         api<DoctorPills>(`/api/doctor/patients/${patient.telegram_id}/pills`),
+        api<Allergies>(`/api/doctor/patients/${patient.telegram_id}/allergies`),
         api<{ items: PatientDocument[] }>(`/api/doctor/patients/${patient.telegram_id}/documents`),
       ]);
       setMoods(moodData.items);
       setAnswers(answerData.items);
       setMeta(answerData.questionnaires);
       setPills(pillsData);
+      setAllergies(allergiesData);
       setDocuments(docsData.items);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Не удалось загрузить пациента.");
@@ -133,6 +137,14 @@ export function DoctorPanel() {
           documents={documents}
           onChange={setDocuments}
         />
+        <section className="card">
+          <h2>Аллергии</h2>
+          {!allergies && <p className="muted">Загрузка…</p>}
+          {allergies && !allergies.text && (
+            <p className="muted">Пациент ещё не указал аллергии.</p>
+          )}
+          {allergies?.text && <p style={{ whiteSpace: "pre-wrap" }}>{allergies.text}</p>}
+        </section>
         <ResultsCharts variant="doctor" moods={pastMoods} series={series} />
         <PillsAdherence pills={pills} />
         <section className="card">

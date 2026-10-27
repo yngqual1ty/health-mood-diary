@@ -60,6 +60,10 @@ export type Mood = {
   created_at: string;
 };
 
+export type Allergies = {
+  text: string;
+};
+
 export type SeriesPoint = {
   date: string;
   created_at?: string;

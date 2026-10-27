@@ -79,6 +79,10 @@ def init_db():
             starter_intro_sent_at TEXT,
             panas_intro_sent_at TEXT,
             pills_intro_sent_at TEXT,
+            scales_repeat_hint_sent_at TEXT,
+            mood_intro_sent_at TEXT,
+            mood_followup_sent_at TEXT,
+            allergies TEXT NOT NULL DEFAULT '',
             bot_chat_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS invites (
@@ -203,6 +207,14 @@ def init_db():
             db.execute("ALTER TABLE users ADD COLUMN panas_intro_sent_at TEXT")
         if "pills_intro_sent_at" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN pills_intro_sent_at TEXT")
+        if "scales_repeat_hint_sent_at" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN scales_repeat_hint_sent_at TEXT")
+        if "mood_intro_sent_at" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN mood_intro_sent_at TEXT")
+        if "mood_followup_sent_at" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN mood_followup_sent_at TEXT")
+        if "allergies" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN allergies TEXT NOT NULL DEFAULT ''")
         if "bot_chat_id" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN bot_chat_id INTEGER")
         invite_columns = {row["name"] for row in db.execute("PRAGMA table_info(invites)").fetchall()}
@@ -410,14 +422,12 @@ def has_completed_suicide_risk(telegram_id):
 
 
 def should_send_suicide_risk_intro(telegram_id):
-    """True for a linked patient who has never received the ОСР Mini App intro."""
+    """True for a patient who has never received the ОСР Mini App intro."""
     with conn() as db:
         row = db.execute(
             """
-            SELECT COALESCE(u.role, 'patient') AS role, u.suicide_risk_intro_sent_at
-            FROM links l
-            LEFT JOIN users u ON u.telegram_id = l.patient_telegram_id
-            WHERE l.patient_telegram_id = ?
+            SELECT COALESCE(role, 'patient') AS role, suicide_risk_intro_sent_at
+            FROM users WHERE telegram_id = ?
             """,
             (telegram_id,),
         ).fetchone()
@@ -443,7 +453,7 @@ def mark_suicide_risk_intro_sent(telegram_id, sent_at=None):
 
 
 def should_send_starter_intro(telegram_id):
-    """True for a linked patient who has never received the HADS/BAI/BDI Mini App intros."""
+    """True for a patient who has never received the HADS/BDI/BAI Mini App intro."""
     with conn() as db:
         row = db.execute(
             """
@@ -476,7 +486,7 @@ def mark_starter_intro_sent(telegram_id, sent_at=None):
 
 
 def claim_scales_intro(telegram_id, sent_at=None):
-    """True if this caller may send HADS/BAI/BDI after completed ОСР (skipped if already sent on /start)."""
+    """True if this caller may send the one-time HADS/BDI/BAI message after completed ОСР."""
     stamp = _utc_stamp(sent_at)
     with conn() as db:
         db.execute(
@@ -576,6 +586,120 @@ def release_pills_intro(telegram_id):
     with conn() as db:
         db.execute(
             "UPDATE users SET pills_intro_sent_at = NULL WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+
+
+def claim_scales_repeat_hint(telegram_id, sent_at=None):
+    """True if this caller may send the one-time HADS/BDI/BAI repeat-hint.
+
+    Once ever per patient (`users.scales_repeat_hint_sent_at`), not per scale
+    and not on every later completion. The copy explains biweekly reminders;
+    sending it again would spam alongside pills/ШПАНА/hotline after HADS.
+    """
+    stamp = _utc_stamp(sent_at)
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        cursor = db.execute(
+            """
+            UPDATE users SET scales_repeat_hint_sent_at = ?
+            WHERE telegram_id = ?
+              AND COALESCE(role, 'patient') = 'patient'
+              AND scales_repeat_hint_sent_at IS NULL
+              AND EXISTS (
+                SELECT 1 FROM answers
+                WHERE patient_telegram_id = users.telegram_id
+                  AND questionnaire_id IN ('hads', 'bdi', 'bai')
+                  AND COALESCE(status, 'completed') = 'completed'
+              )
+            """,
+            (stamp, telegram_id),
+        )
+        return cursor.rowcount == 1
+
+
+def release_scales_repeat_hint(telegram_id):
+    with conn() as db:
+        db.execute(
+            "UPDATE users SET scales_repeat_hint_sent_at = NULL WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+
+
+def claim_mood_intro(telegram_id, sent_at=None):
+    """True if this caller may send the one-time daily-mood Mini App intro.
+
+    Once ever per patient (`users.mood_intro_sent_at`). Same gate as the
+    HADS/BDI/BAI repeat hint: completed starter scale, patient only. Not ОСР
+    or ШПАНА. Call after the hint so Telegram order is hint, then mood.
+    """
+    stamp = _utc_stamp(sent_at)
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        cursor = db.execute(
+            """
+            UPDATE users SET mood_intro_sent_at = ?
+            WHERE telegram_id = ?
+              AND COALESCE(role, 'patient') = 'patient'
+              AND mood_intro_sent_at IS NULL
+              AND EXISTS (
+                SELECT 1 FROM answers
+                WHERE patient_telegram_id = users.telegram_id
+                  AND questionnaire_id IN ('hads', 'bdi', 'bai')
+                  AND COALESCE(status, 'completed') = 'completed'
+              )
+            """,
+            (stamp, telegram_id),
+        )
+        return cursor.rowcount == 1
+
+
+def release_mood_intro(telegram_id):
+    with conn() as db:
+        db.execute(
+            "UPDATE users SET mood_intro_sent_at = NULL WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+
+
+def claim_mood_followup(telegram_id, sent_at=None):
+    """True if this caller may send the one-time after-first-mood closer.
+
+    Once ever per patient (`users.mood_followup_sent_at`). Requires at least
+    one mood row so later empty calls cannot send it. Not a daily reminder.
+    """
+    stamp = _utc_stamp(sent_at)
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        cursor = db.execute(
+            """
+            UPDATE users SET mood_followup_sent_at = ?
+            WHERE telegram_id = ?
+              AND COALESCE(role, 'patient') = 'patient'
+              AND mood_followup_sent_at IS NULL
+              AND EXISTS (
+                SELECT 1 FROM moods
+                WHERE patient_telegram_id = users.telegram_id
+              )
+            """,
+            (stamp, telegram_id),
+        )
+        return cursor.rowcount == 1
+
+
+def release_mood_followup(telegram_id):
+    with conn() as db:
+        db.execute(
+            "UPDATE users SET mood_followup_sent_at = NULL WHERE telegram_id = ?",
             (telegram_id,),
         )
 

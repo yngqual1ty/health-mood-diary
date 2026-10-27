@@ -35,6 +35,12 @@ from db import (
     release_pills_intro,
     claim_scales_intro,
     release_scales_intro,
+    claim_scales_repeat_hint,
+    release_scales_repeat_hint,
+    claim_mood_intro,
+    release_mood_intro,
+    claim_mood_followup,
+    release_mood_followup,
     claim_hotline_notice,
     release_hotline_notice,
     has_completed_suicide_risk,
@@ -53,25 +59,11 @@ log = logging.getLogger(__name__)
 STARTER_QUESTIONNAIRES = frozenset({"hads", "bai", "bdi"})
 GATED_AFTER_OSR = frozenset({"hads", "bai", "bdi", "panas"})
 ALERT_QUESTIONNAIRES = frozenset({"suicide-risk", "hads", "bdi"})
-SCALES_INTRO = (
-    (
-        "hads",
-        "Заполнить HADS",
-        "Пожалуйста, заполните три стартовые шкалы. Это не диагноз — "
-        "так проще отслеживать самочувствие вместе с врачом.\n\n"
-        "HADS — тревога и депрессия.",
-    ),
-    (
-        "bai",
-        "Заполнить BAI",
-        "BAI — тревога. Заполните, когда будет удобно.",
-    ),
-    (
-        "bdi",
-        "Заполнить BDI",
-        "BDI — депрессия. Вместе с остальными шкалами её увидит ваш врач.",
-    ),
+SCALES_INTRO_TEXT = (
+    "Ниже я отправил тебе 3 дополнительных входных шкалы, они измерят твой уровень депрессии и тревоги.\n\n"
+    "До тех пор пока у тебя нет прикрепленного врача, мы НИКОМУ не передаем эти данные"
 )
+OSR_THANKS_TEXT = "Спасибо за твой ответ! Это помогает врачу лучше понять тебя"
 # ОСР chart score is C-SSRS max 0–5 and cannot reach 18. Doctor alert uses
 # the sum of all nine item values (max 23). See questionnaires.json scoring.rules.
 OSR_SUM_THRESHOLD = 18
@@ -89,6 +81,29 @@ PILLS_INTRO_TEXT = (
     "Если вы принимаете лекарства, укажите схему один раз. "
     "Ежедневные отметки придут сообщением от бота.\n\n"
     "Это не медицинская рекомендация. Заполните, когда будет удобно."
+)
+# Once ever per patient after first completed HADS/BDI/BAI. Not per scale and
+# not on every later fill — the text is a reminder-policy explanation, and
+# HADS already may send ШПАНА + pills intro + hotline in the same turn.
+SCALES_REPEAT_HINT_TEXT = (
+    "Эти опросники ты сможешь снова пройти в любое время.\n"
+    "Я рекомендую проходить их как минимум раз в две недели, напоминание отправлю в этот чат"
+)
+# Once ever per patient after the HADS/BDI/BAI repeat hint. Same trigger, next
+# message. Daily mood is Mini App /mood/, not PANAS and not ОСР.
+MOOD_INTRO_TEXT = (
+    "Для ежедневной оценки состояния я пришлю визуально-аналоговую шкалу, выбери то, что ближе тебе"
+)
+# Once ever after the first successful mood fill. Onboarding closer, not a daily
+# reminder — later /mood/ taps must not send this again.
+MOOD_FOLLOWUP_TEXT = (
+    "Такую шкалу я буду присылать ежедневно для мониторинга твоего состояния\n"
+    "\n"
+    "Помимо этого ты можешь заполнить дневник сна, дневник приема таблеточек, я напомню о них, когда придет время.\n"
+    "\n"
+    "Если ты хочешь, чтобы твой врач увидел другие заключения или результаты анализов - просто отправь их в этот чат, они прикрепятся к твоему аккаунту автоматически.\n"
+    "\n"
+    "По кнопке ниже - можешь указать аллергии"
 )
 HOTLINE_TEXT = (
     "Если Вы чувствуете необходимость в экстренной помощи - телефон доверия • "
@@ -309,6 +324,10 @@ class MoodIn(BaseModel):
     note: str = Field(default="", max_length=2000)
 
 
+class AllergiesIn(BaseModel):
+    text: str = Field(default="", max_length=2000)
+
+
 class AnswersIn(BaseModel):
     questionnaire_id: str = Field(min_length=1, max_length=100)
     answers: dict
@@ -493,26 +512,101 @@ def maybe_send_pills_intro(telegram_id: int) -> None:
         release_pills_intro(telegram_id)
 
 
+def send_mood_intro(telegram_id: int) -> bool:
+    web_app_url = _mini_app_url("mood")
+    if not web_app_url:
+        return False
+    return send_telegram_message(
+        telegram_id,
+        MOOD_INTRO_TEXT,
+        {
+            "inline_keyboard": [[
+                {"text": "Оценить настроение", "web_app": {"url": web_app_url}},
+            ]],
+        },
+    )
+
+
+def maybe_send_mood_intro(telegram_id: int) -> None:
+    """One-time mood Mini App after the HADS/BDI/BAI repeat hint. Not ОСР/ШПАНА."""
+    if not _telegram_api_url("sendMessage") or not _mini_app_url("mood"):
+        log.warning("Шкала настроения: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
+        return
+    if not claim_mood_intro(telegram_id):
+        return
+    if not send_mood_intro(telegram_id):
+        release_mood_intro(telegram_id)
+
+
+def send_mood_followup(telegram_id: int) -> bool:
+    web_app_url = _mini_app_url("allergies")
+    if not web_app_url:
+        return False
+    return send_telegram_message(
+        telegram_id,
+        MOOD_FOLLOWUP_TEXT,
+        {
+            "inline_keyboard": [[
+                {"text": "Указать аллергии", "web_app": {"url": web_app_url}},
+            ]],
+        },
+    )
+
+
+def maybe_send_mood_followup(telegram_id: int) -> None:
+    """Once-ever closer after the first saved mood. Not on later /mood/ taps."""
+    if not _telegram_api_url("sendMessage") or not _mini_app_url("allergies"):
+        log.warning("После настроения: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
+        return
+    if not claim_mood_followup(telegram_id):
+        return
+    if not send_mood_followup(telegram_id):
+        release_mood_followup(telegram_id)
+
+
+def maybe_send_scales_repeat_hint(telegram_id: int) -> None:
+    """Once-ever Telegram hint after first completed HADS, BDI, or BAI.
+
+    Debounce: `users.scales_repeat_hint_sent_at` — one send per patient, ever.
+    Chosen over every completion / once per scale so the biweekly-reminder
+    explanation is not repeated with other HADS follow-ups (ШПАНА, pills, hotline).
+    Not sent after ОСР or ШПАНА.
+    After a successful hint, send the one-time mood Mini App (hint, then mood).
+    If the hint already went out, still try mood so a failed first send can retry.
+    """
+    if not _telegram_api_url("sendMessage"):
+        log.warning("Повтор шкал: нет BOT_TOKEN, пропуск")
+        return
+    if not claim_scales_repeat_hint(telegram_id):
+        maybe_send_mood_intro(telegram_id)
+        return
+    if not send_telegram_message(telegram_id, SCALES_REPEAT_HINT_TEXT):
+        release_scales_repeat_hint(telegram_id)
+        return
+    maybe_send_mood_intro(telegram_id)
+
+
 def send_scales_intro(telegram_id: int) -> bool:
-    for path, label, text in SCALES_INTRO:
-        web_app_url = _mini_app_url(path)
-        if not web_app_url:
-            return False
-        if not send_telegram_message(
-            telegram_id,
-            text,
-            {
-                "inline_keyboard": [[
-                    {"text": label, "web_app": {"url": web_app_url}},
-                ]],
-            },
-        ):
-            return False
-    return True
+    hads_url = _mini_app_url("hads")
+    bdi_url = _mini_app_url("bdi")
+    bai_url = _mini_app_url("bai")
+    if not (hads_url and bdi_url and bai_url):
+        return False
+    return send_telegram_message(
+        telegram_id,
+        SCALES_INTRO_TEXT,
+        {
+            "inline_keyboard": [
+                [{"text": "HADS", "web_app": {"url": hads_url}}],
+                [{"text": "BDI", "web_app": {"url": bdi_url}}],
+                [{"text": "BAI", "web_app": {"url": bai_url}}],
+            ],
+        },
+    )
 
 
 def maybe_send_scales_intro(telegram_id: int) -> None:
-    """Fallback HADS/BAI/BDI after first completed ОСР if they were not already sent on /start."""
+    """One HADS/BDI/BAI message after first completed ОСР (`starter_intro_sent_at`)."""
     if not _telegram_api_url("sendMessage") or not _mini_app_url("hads"):
         log.warning("Стартовые шкалы: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
         return
@@ -520,6 +614,18 @@ def maybe_send_scales_intro(telegram_id: int) -> None:
         return
     if not send_scales_intro(telegram_id):
         release_scales_intro(telegram_id)
+
+
+def maybe_send_osr_patient_followup(telegram_id: int, definition, answers) -> None:
+    """After completed ОСР: hotline if item sum ≥ 18, otherwise thanks; then starter scales once."""
+    if not _telegram_api_url("sendMessage"):
+        log.warning("Ответ после ОСР: нет BOT_TOKEN, пропуск")
+        maybe_send_scales_intro(telegram_id)
+        return
+    score = questionnaire_item_sum(definition, answers)
+    text = HOTLINE_TEXT if score >= OSR_SUM_THRESHOLD else OSR_THANKS_TEXT
+    send_telegram_message(telegram_id, text)
+    maybe_send_scales_intro(telegram_id)
 
 
 def questionnaire_item_sum(definition, answers) -> int:
@@ -618,7 +724,7 @@ def send_doctor_scale_alert(doctor_id: int, patient_label: str, alert: dict, sta
 
 
 def maybe_notify_scale_alerts(patient_id: int, questionnaire_id: str, definition, answers, result) -> None:
-    """After a completed ОСР / HADS / BDI: doctor if threshold crossed, else patient hotline."""
+    """Doctor if ОСР sum≥18 / HADS-D≥11 / BDI≥30. Below-threshold patient hotline is HADS/BDI only."""
     if questionnaire_id not in ALERT_QUESTIONNAIRES:
         return
     with conn() as db:
@@ -649,6 +755,8 @@ def maybe_notify_scale_alerts(patient_id: int, questionnaire_id: str, definition
             alert,
             stamp,
         )
+        return
+    if questionnaire_id == "suicide-risk":
         return
     if not _telegram_api_url("sendMessage"):
         log.warning("Горячая линия: нет BOT_TOKEN, пропуск")
@@ -752,7 +860,56 @@ def create_mood(body: MoodIn, authorization: str | None = Header(default=None)):
                VALUES (?, ?, ?, ?, ?)""",
             (uid, body.score, ", ".join(emotions), note, stamp),
         )
+    maybe_send_mood_followup(uid)
     return {"ok": True}
+
+
+def _allergies_payload(text: str | None) -> dict:
+    return {"text": (text or "").strip()}
+
+
+@app.get("/api/allergies")
+def get_allergies(authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    with conn() as db:
+        row = db.execute(
+            "SELECT allergies FROM users WHERE telegram_id = ?",
+            (uid,),
+        ).fetchone()
+    return _allergies_payload(row["allergies"] if row else "")
+
+
+@app.post("/api/allergies")
+def save_allergies(body: AllergiesIn, authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    text = body.text.strip()
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (uid,),
+        )
+        db.execute(
+            "UPDATE users SET allergies = ? WHERE telegram_id = ?",
+            (text, uid),
+        )
+    return _allergies_payload(text)
+
+
+@app.get("/api/doctor/patients/{patient_id}/allergies")
+def doctor_patient_allergies(
+    patient_id: int, authorization: str | None = Header(default=None)
+):
+    uid = current_user(authorization)
+    require_doctor(uid)
+    with conn() as db:
+        ensure_patient_link(db, uid, patient_id)
+        row = db.execute(
+            "SELECT allergies FROM users WHERE telegram_id = ?",
+            (patient_id,),
+        ).fetchone()
+    return _allergies_payload(row["allergies"] if row else "")
 
 
 def _normalize_regimen_items(items: list[PillItemIn]):
@@ -1492,11 +1649,13 @@ def save_answers(body: AnswersIn, authorization: str | None = Header(default=Non
              body.status, json.dumps(result, ensure_ascii=False)),
         )
     if body.questionnaire_id == "suicide-risk" and body.status == "completed":
-        maybe_send_scales_intro(uid)
+        maybe_send_osr_patient_followup(uid, definition, body.answers)
     if body.questionnaire_id in STARTER_QUESTIONNAIRES and body.status == "completed":
         maybe_send_panas_intro(uid)
     if body.questionnaire_id == "hads" and body.status == "completed":
         maybe_send_pills_intro(uid)
+    if body.questionnaire_id in STARTER_QUESTIONNAIRES and body.status == "completed":
+        maybe_send_scales_repeat_hint(uid)
     if body.status == "completed":
         maybe_notify_scale_alerts(uid, body.questionnaire_id, definition, body.answers, result)
     return {"ok": True, "status": body.status, "result": result}

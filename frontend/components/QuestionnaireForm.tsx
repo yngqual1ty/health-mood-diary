@@ -4,10 +4,27 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ScaleList } from "@/components/ScaleList";
 import { api } from "@/lib/api";
-import { POST_OSR_SCALES } from "@/lib/questionnaires";
+import { STARTER_SCALES, type PatientScaleLink } from "@/lib/questionnaires";
 import type { Me, Questionnaire } from "@/lib/types";
 
 const REQUIRES_SUICIDE_RISK = new Set(["hads", "bai", "bdi", "panas"]);
+const THANKS_TEXT = "Спасибо, эти шкалы помогут тебе предметно общаться на приеме";
+
+async function remainingAfterSubmit(completedId: string): Promise<PatientScaleLink[]> {
+  if (completedId === "suicide-risk") return STARTER_SCALES;
+  try {
+    const payload = await api<{ items: Questionnaire[] }>("/api/questionnaires");
+    const completed = new Set(
+      payload.items
+        .filter((item) => item.latest?.status === "completed")
+        .map((item) => item.id),
+    );
+    completed.add(completedId);
+    return STARTER_SCALES.filter((item) => !completed.has(item.id));
+  } catch {
+    return [];
+  }
+}
 
 function ResultView({ questionnaire }: { questionnaire: Questionnaire }) {
   const result = questionnaire.latest?.result;
@@ -49,6 +66,7 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
   const [saving, setSaving] = useState(false);
   const [blocked, setBlocked] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [remainingScales, setRemainingScales] = useState<PatientScaleLink[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +74,7 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
     setBlocked(false);
     setStatus("");
     setJustSaved(false);
+    setRemainingScales([]);
     async function load() {
       try {
         if (REQUIRES_SUICIDE_RISK.has(questionnaireId)) {
@@ -115,11 +134,11 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
           status: "completed",
         }),
       });
-      const next = await api<Questionnaire>(`/api/questionnaires/${questionnaireId}`);
-      setData(next);
+      const nextScales = await remainingAfterSubmit(questionnaireId);
       setAnswers({});
+      setRemainingScales(nextScales);
       setJustSaved(true);
-      setStatus("Ответы сохранены. Сегодняшний результат появится на графике со следующего дня.");
+      setStatus("");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Не удалось сохранить.");
     } finally {
@@ -127,26 +146,36 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
     }
   }
 
-  const showNextScales = questionnaireId === "suicide-risk" && justSaved;
+  if (justSaved) {
+    return (
+      <>
+        <section className="card thanks">
+          <p>{THANKS_TEXT}</p>
+        </section>
+        {remainingScales.length > 0 && (
+          <ScaleList
+            title="Следующие шкалы"
+            hint={
+              questionnaireId === "suicide-risk"
+                ? "Пожалуйста, заполните три стартовые шкалы. Это не диагноз — так проще отслеживать самочувствие вместе с врачом."
+                : undefined
+            }
+            items={remainingScales}
+          />
+        )}
+        <p>
+          <Link href="/" className="quiet-link">
+            К результатам
+          </Link>
+        </p>
+      </>
+    );
+  }
 
   return (
     <>
       <h1>{data.title}</h1>
       {data.description && <p className="muted">{data.description}</p>}
-      {showNextScales && (
-        <>
-          <ScaleList
-            title="Следующие шкалы"
-            hint="Пожалуйста, заполните три стартовые шкалы. Это не диагноз — так проще отслеживать самочувствие вместе с врачом."
-            items={POST_OSR_SCALES}
-          />
-          <p>
-            <Link href="/" className="quiet-link">
-              К результатам
-            </Link>
-          </p>
-        </>
-      )}
       {data.latest && (
         <section className="card">
           <h2>Последний результат</h2>
