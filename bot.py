@@ -39,7 +39,6 @@ from db import (
     list_patients_due_for_pills_checkin,
     mark_pills_prompt_sent,
     write_pills_log,
-    should_send_suicide_risk_intro,
     mark_suicide_risk_intro_sent,
     _utc_date,
     DocumentError,
@@ -152,8 +151,8 @@ def pills_menu(day: str):
 
 
 # Daily mood is the Mini App page /mood/, not a Telegram inline keyboard and not PANAS.
-# Patient /start (including invite): greeting, then ОСР. HADS/BAI/BDI wait until
-# completed ОСР in app.py. Repeat /start only resends a missing ОСР intro once.
+# Patient /start (including invite, including already linked): always greeting + ОСР.
+# HADS/BAI/BDI wait until completed ОСР in app.py and are not sent on /start.
 # Doctors /start do not get this patient pack.
 # ШПАНА stays one-time after the first HADS/BAI/BDI completion in app.py.
 # Pills-diary Mini App is one-time after a completed HADS in app.py (skipped if configured).
@@ -211,10 +210,9 @@ async def start(message: Message):
     if payload.startswith("invite_"):
         consume_invite(user.id, payload[len("invite_"):])
     await message.answer(PATIENT_START_TEXT, reply_markup=menu())
-    if should_send_suicide_risk_intro(user.id):
-        if not await send_suicide_risk_intro(message, user.id):
-            return
-        mark_suicide_risk_intro_sent(user.id)
+    if not await send_suicide_risk_intro(message, user.id):
+        return
+    mark_suicide_risk_intro_sent(user.id)
 
 
 async def _send_reminder(bot: Bot, telegram_id: int) -> bool:
