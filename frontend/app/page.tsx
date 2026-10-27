@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ResultsCharts } from "@/components/ResultsCharts";
 import { ScaleList } from "@/components/ScaleList";
+import { AllergyPrompt } from "@/components/AllergyPrompt";
 import { api } from "@/lib/api";
 import { POST_OSR_SCALES, SUICIDE_RISK_SCALE } from "@/lib/questionnaires";
 import type { Me, ResultsPayload } from "@/lib/types";
@@ -26,6 +27,7 @@ export default function HomePage() {
 
   return (
     <>
+      <AllergyPrompt />
       <h1>Результаты</h1>
       <p className="muted">Графики за предыдущие дни. Сегодняшние ответы появятся здесь завтра.</p>
       {me && !osrDone && (

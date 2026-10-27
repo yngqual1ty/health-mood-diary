@@ -83,6 +83,7 @@ def init_db():
             mood_intro_sent_at TEXT,
             mood_followup_sent_at TEXT,
             allergies TEXT NOT NULL DEFAULT '',
+            allergies_completed INTEGER NOT NULL DEFAULT 0,
             bot_chat_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS invites (
@@ -98,6 +99,14 @@ def init_db():
             score INTEGER NOT NULL CHECK(score BETWEEN 1 AND 5), emotions TEXT NOT NULL DEFAULT '',
             note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS patient_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_telegram_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_patient_notes_patient
+            ON patient_notes(patient_telegram_id, id);
         CREATE TABLE IF NOT EXISTS answers (
             id INTEGER PRIMARY KEY AUTOINCREMENT, patient_telegram_id INTEGER NOT NULL,
             questionnaire_id TEXT NOT NULL, payload TEXT NOT NULL,
@@ -215,6 +224,16 @@ def init_db():
             db.execute("ALTER TABLE users ADD COLUMN mood_followup_sent_at TEXT")
         if "allergies" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN allergies TEXT NOT NULL DEFAULT ''")
+        if "allergies_completed" not in user_columns:
+            db.execute(
+                "ALTER TABLE users ADD COLUMN allergies_completed INTEGER NOT NULL DEFAULT 0"
+            )
+        db.execute(
+            """
+            UPDATE users SET allergies_completed = 1
+            WHERE allergies_completed = 0 AND TRIM(allergies) <> ''
+            """
+        )
         if "bot_chat_id" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN bot_chat_id INTEGER")
         invite_columns = {row["name"] for row in db.execute("PRAGMA table_info(invites)").fetchall()}
@@ -1033,6 +1052,7 @@ def delete_sessions_for_user(telegram_id):
 _FLOW_RESET_TABLES = (
     "answers",
     "moods",
+    "patient_notes",
     "pills_log",
     "pills_prompts",
     "mood_prompts",

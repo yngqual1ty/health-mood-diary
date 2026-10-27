@@ -335,6 +335,10 @@ class AllergiesIn(BaseModel):
     text: str = Field(default="", max_length=2000)
 
 
+class PatientNoteIn(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+
+
 class AnswersIn(BaseModel):
     questionnaire_id: str = Field(min_length=1, max_length=100)
     answers: dict
@@ -890,8 +894,8 @@ def create_mood(body: MoodIn, authorization: str | None = Header(default=None)):
     return {"ok": True}
 
 
-def _allergies_payload(text: str | None) -> dict:
-    return {"text": (text or "").strip()}
+def _allergies_payload(text: str | None, completed: bool = False) -> dict:
+    return {"text": (text or "").strip(), "completed": completed}
 
 
 @app.get("/api/allergies")
@@ -900,10 +904,53 @@ def get_allergies(authorization: str | None = Header(default=None)):
     require_patient(uid)
     with conn() as db:
         row = db.execute(
-            "SELECT allergies FROM users WHERE telegram_id = ?",
+            "SELECT allergies, allergies_completed FROM users WHERE telegram_id = ?",
             (uid,),
         ).fetchone()
-    return _allergies_payload(row["allergies"] if row else "")
+    return _allergies_payload(
+        row["allergies"] if row else "",
+        bool(row["allergies_completed"]) if row else False,
+    )
+
+
+@app.get("/api/notes")
+def list_patient_notes(authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    with conn() as db:
+        rows = db.execute(
+            """
+            SELECT id, text, created_at
+            FROM patient_notes
+            WHERE patient_telegram_id = ?
+            ORDER BY id
+            """,
+            (uid,),
+        ).fetchall()
+    return {"items": [dict(row) for row in rows]}
+
+
+@app.post("/api/notes")
+def create_patient_note(
+    body: PatientNoteIn,
+    authorization: str | None = Header(default=None),
+):
+    uid = current_user(authorization)
+    require_patient(uid)
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Введите текст заметки.")
+    created_at = datetime.now(APP_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+    with conn() as db:
+        cursor = db.execute(
+            """
+            INSERT INTO patient_notes (patient_telegram_id, text, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (uid, text, created_at),
+        )
+        note_id = cursor.lastrowid
+    return {"id": note_id, "text": text, "created_at": created_at}
 
 
 @app.post("/api/allergies")
@@ -917,10 +964,14 @@ def save_allergies(body: AllergiesIn, authorization: str | None = Header(default
             (uid,),
         )
         db.execute(
-            "UPDATE users SET allergies = ? WHERE telegram_id = ?",
+            """
+            UPDATE users
+            SET allergies = ?, allergies_completed = 1
+            WHERE telegram_id = ?
+            """,
             (text, uid),
         )
-    return _allergies_payload(text)
+    return _allergies_payload(text, completed=True)
 
 
 @app.get("/api/doctor/patients/{patient_id}/allergies")
@@ -932,10 +983,13 @@ def doctor_patient_allergies(
     with conn() as db:
         ensure_patient_link(db, uid, patient_id)
         row = db.execute(
-            "SELECT allergies FROM users WHERE telegram_id = ?",
+            "SELECT allergies, allergies_completed FROM users WHERE telegram_id = ?",
             (patient_id,),
         ).fetchone()
-    return _allergies_payload(row["allergies"] if row else "")
+    return _allergies_payload(
+        row["allergies"] if row else "",
+        bool(row["allergies_completed"]) if row else False,
+    )
 
 
 def _normalize_regimen_items(items: list[PillItemIn]):

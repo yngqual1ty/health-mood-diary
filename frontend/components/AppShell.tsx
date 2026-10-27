@@ -69,6 +69,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     { href: "/doctor/", label: "Пациенты", id: "doctor" },
     ...(me.is_admin ? [{ href: "/admin/", label: "Врачи", id: "admin" }] : []),
   ];
+  const patientTabs = [
+    { href: "/", label: "История", id: "history" },
+    { href: "/mood/", label: "Настроение", id: "mood" },
+    { href: "/notes/", label: "Заметки", id: "notes" },
+  ];
 
   return (
     <>
@@ -91,7 +96,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </header>
       )}
       {!isDoctor && <HelpTicker />}
-      <main className={webLk ? "app web-lk" : isDoctor ? "app has-nav" : "app has-ticker"}>
+      <main className={webLk ? "app web-lk" : isDoctor ? "app has-nav" : "app has-ticker has-nav"}>
         {children}
       </main>
       {isDoctor && !webLk && (
@@ -104,6 +109,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </Link>
             );
           })}
+        </nav>
+      )}
+      {!isDoctor && (
+        <nav className="nav" style={{ gridTemplateColumns: `repeat(${patientTabs.length}, minmax(0, 1fr))` }}>
+          {patientTabs.map((tab) => (
+            <Link key={tab.id} href={tab.href} className={pathname === tab.href ? "active" : ""}>
+              {tab.label}
+            </Link>
+          ))}
         </nav>
       )}
     </>

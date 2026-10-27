@@ -62,6 +62,13 @@ export type Mood = {
 
 export type Allergies = {
   text: string;
+  completed: boolean;
+};
+
+export type PatientNote = {
+  id: number;
+  text: string;
+  created_at: string;
 };
 
 export type SeriesPoint = {

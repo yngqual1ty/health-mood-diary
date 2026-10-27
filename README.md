@@ -55,4 +55,6 @@ Only a de-identified summary of the patient's data is sent to the LLM (mood stat
 
 The main doctor's account is assigned the doctor role when the API starts. The database is created locally and must not be committed. Patients and their linked doctor share one document area: documents are grouped by uploader, and each can delete only the documents they uploaded.
 
+Patients can record medication allergies on the results page; their linked doctor can view them in the patient record. Personal notes are stored separately and can only be accessed by the patient who wrote them.
+
 Medication reminders use the `APP_TIMEZONE` setting (default `Europe/Moscow`) and are sent by the running bot process, so keep the bot running continuously. Each patient must start the bot before Telegram can deliver reminders. Uploaded patient documents are stored privately in `PATIENT_DOCUMENTS_DIR` (default `patient_documents/`); include that directory in protected backups and never commit it.
