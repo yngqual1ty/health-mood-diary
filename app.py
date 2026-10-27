@@ -477,7 +477,7 @@ def _web_app_keyboard_button(text: str, path: str) -> dict | None:
     url = _mini_app_url(path)
     if not url:
         return None
-    return {"text": text, "web_app": {"url": url}}
+    return {"text": text, "type": "web_app", "web_app": {"url": url}}
 
 
 def _send_message_reply_markup(reply_markup: dict) -> dict:
