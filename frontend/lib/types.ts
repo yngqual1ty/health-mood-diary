@@ -65,6 +65,16 @@ export type Allergies = {
   completed: boolean;
 };
 
+export type SleepQuality = "good" | "ok" | "bad";
+
+export type SleepEntry = {
+  date: string;
+  quality: SleepQuality;
+  hours: number | null;
+  note: string;
+  created_at: string;
+};
+
 export type PatientNote = {
   id: number;
   text: string;

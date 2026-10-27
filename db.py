@@ -83,8 +83,10 @@ def init_db():
             scales_repeat_hint_sent_at TEXT,
             mood_intro_sent_at TEXT,
             mood_followup_sent_at TEXT,
+            bot_menu_sent_at TEXT,
             allergies TEXT NOT NULL DEFAULT '',
             allergies_completed INTEGER NOT NULL DEFAULT 0,
+            allergies_skipped_at TEXT,
             bot_chat_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS invites (
@@ -133,6 +135,16 @@ def init_db():
             patient_telegram_id INTEGER NOT NULL,
             date TEXT NOT NULL,
             taken TEXT NOT NULL CHECK(taken IN ('yes', 'no', 'partial')),
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(patient_telegram_id, date)
+        );
+        CREATE TABLE IF NOT EXISTS sleep_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_telegram_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            quality TEXT NOT NULL CHECK(quality IN ('good', 'ok', 'bad')),
+            hours REAL,
             note TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(patient_telegram_id, date)
@@ -225,12 +237,16 @@ def init_db():
             db.execute("ALTER TABLE users ADD COLUMN mood_intro_sent_at TEXT")
         if "mood_followup_sent_at" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN mood_followup_sent_at TEXT")
+        if "bot_menu_sent_at" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN bot_menu_sent_at TEXT")
         if "allergies" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN allergies TEXT NOT NULL DEFAULT ''")
         if "allergies_completed" not in user_columns:
             db.execute(
                 "ALTER TABLE users ADD COLUMN allergies_completed INTEGER NOT NULL DEFAULT 0"
             )
+        if "allergies_skipped_at" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN allergies_skipped_at TEXT")
         db.execute(
             """
             UPDATE users SET allergies_completed = 1
@@ -350,6 +366,7 @@ def mark_reminder_sent(patient_telegram_id, sent_at=None):
 
 
 PILLS_TAKEN_VALUES = ("yes", "no", "partial")
+SLEEP_QUALITY_VALUES = ("good", "ok", "bad")
 
 
 def _utc_date(now=None):
@@ -417,6 +434,53 @@ def list_pills_log(patient_telegram_id, since_date, limit=30):
             (patient_telegram_id, since_date, limit),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def list_sleep_log(patient_telegram_id, since_date, limit=30):
+    with conn() as db:
+        rows = db.execute(
+            """
+            SELECT date, quality, hours, note, created_at
+            FROM sleep_log
+            WHERE patient_telegram_id = ? AND date >= ?
+            ORDER BY date DESC
+            LIMIT ?
+            """,
+            (patient_telegram_id, since_date, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_sleep_log(patient_telegram_id, day):
+    with conn() as db:
+        row = db.execute(
+            """
+            SELECT id, patient_telegram_id, date, quality, hours, note, created_at
+            FROM sleep_log
+            WHERE patient_telegram_id = ? AND date = ?
+            """,
+            (patient_telegram_id, day),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def write_sleep_log(patient_telegram_id, day, quality, hours=None, note=""):
+    if quality not in SLEEP_QUALITY_VALUES:
+        raise ValueError("quality must be good, ok, or bad")
+    note = (note or "").strip()
+    with conn() as db:
+        db.execute(
+            """
+            INSERT INTO sleep_log (patient_telegram_id, date, quality, hours, note)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(patient_telegram_id, date) DO UPDATE SET
+                quality = excluded.quality,
+                hours = excluded.hours,
+                note = excluded.note
+            """,
+            (patient_telegram_id, day, quality, hours, note),
+        )
+    return get_sleep_log(patient_telegram_id, day)
 
 
 def write_pills_log(patient_telegram_id, day, taken, note="", overwrite=False):
@@ -521,6 +585,28 @@ def mark_suicide_risk_skipped(telegram_id, sent_at=None):
             """
             UPDATE users SET suicide_risk_skipped_at = ?
             WHERE telegram_id = ? AND suicide_risk_skipped_at IS NULL
+            """,
+            (stamp, telegram_id),
+        )
+        return cursor.rowcount == 1
+
+
+def mark_allergies_skipped(telegram_id, sent_at=None):
+    """Record allergies skip once. True if this call set `allergies_skipped_at`.
+
+    Does not set `allergies_completed`. The Mini App remains available; other
+    features are not gated on this flag. The thanks + keyboard uses `bot_menu_sent_at`.
+    """
+    stamp = _utc_stamp(sent_at)
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        cursor = db.execute(
+            """
+            UPDATE users SET allergies_skipped_at = ?
+            WHERE telegram_id = ? AND allergies_skipped_at IS NULL
             """,
             (stamp, telegram_id),
         )
@@ -817,6 +903,40 @@ def release_mood_followup(telegram_id):
     with conn() as db:
         db.execute(
             "UPDATE users SET mood_followup_sent_at = NULL WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+
+
+def claim_bot_menu(telegram_id, sent_at=None):
+    """True if this caller may send the one-time thanks + persistent bot keyboard.
+
+    Once ever per patient (`users.bot_menu_sent_at`). After the allergies intro
+    (`mood_followup_sent_at`): first allergies save or Telegram «Пропустить».
+    Later allergy edits must not send it again.
+    """
+    stamp = _utc_stamp(sent_at)
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        cursor = db.execute(
+            """
+            UPDATE users SET bot_menu_sent_at = ?
+            WHERE telegram_id = ?
+              AND COALESCE(role, 'patient') = 'patient'
+              AND bot_menu_sent_at IS NULL
+              AND mood_followup_sent_at IS NOT NULL
+            """,
+            (stamp, telegram_id),
+        )
+        return cursor.rowcount == 1
+
+
+def release_bot_menu(telegram_id):
+    with conn() as db:
+        db.execute(
+            "UPDATE users SET bot_menu_sent_at = NULL WHERE telegram_id = ?",
             (telegram_id,),
         )
 
@@ -1151,6 +1271,7 @@ _FLOW_RESET_TABLES = (
     "answers",
     "moods",
     "patient_notes",
+    "sleep_log",
     "pills_log",
     "pills_prompts",
     "mood_prompts",

@@ -46,6 +46,11 @@ from db import (
     release_mood_intro,
     claim_mood_followup,
     release_mood_followup,
+    claim_bot_menu,
+    release_bot_menu,
+    list_sleep_log,
+    write_sleep_log,
+    SLEEP_QUALITY_VALUES,
     claim_hotline_notice,
     release_hotline_notice,
     suicide_risk_unblocked,
@@ -69,6 +74,7 @@ SCALES_INTRO_TEXT = (
     "До тех пор пока у тебя нет прикрепленного врача, мы НИКОМУ не передаем эти данные"
 )
 SKIP_SCALES_CALLBACK = "skip:scales"
+SKIP_ALLERGIES_CALLBACK = "skip:allergies"
 OSR_THANKS_TEXT = "Спасибо за твой ответ! Это помогает врачу лучше понять тебя"
 # ОСР chart score is C-SSRS max 0–5 and cannot reach 18. Doctor alert uses
 # the sum of all nine item values (max 23). See questionnaires.json scoring.rules.
@@ -111,6 +117,13 @@ MOOD_FOLLOWUP_TEXT = (
     "\n"
     "По кнопке ниже - можешь указать аллергии"
 )
+# Once ever after allergies save or Telegram «Пропустить». Persistent reply
+# keyboard, not a daily reminder. Later allergy edits must not send this again.
+BOT_MENU_THANKS_TEXT = (
+    "Спасибо за заполнение!\n"
+    "Отправил тебе клавиатуру для заполнения дневника сна, таблеток, и вообще всего функционала бота"
+)
+SEND_CONCLUSION_BUTTON = "Отправить заключение"
 HOTLINE_TEXT = (
     "Если Вы чувствуете необходимость в экстренной помощи - телефон доверия • "
     "ФГБУ «НМИЦ ПН им. В.П. Сербского» Минздрава России. "
@@ -388,6 +401,13 @@ class PillsLogIn(BaseModel):
     date: str | None = None
 
 
+class SleepIn(BaseModel):
+    quality: str = Field(pattern="^(good|ok|bad)$")
+    hours: float | None = Field(default=None, ge=0, le=24)
+    note: str = Field(default="", max_length=2000)
+    date: str | None = None
+
+
 def normalized_medication_times(times: list[str]) -> list[str]:
     normalized = sorted(set(value.strip() for value in times))
     if len(normalized) != len(times):
@@ -561,11 +581,54 @@ def send_mood_followup(telegram_id: int) -> bool:
         telegram_id,
         MOOD_FOLLOWUP_TEXT,
         {
-            "inline_keyboard": [[
-                {"text": "Указать аллергии", "web_app": {"url": web_app_url}},
-            ]],
+            "inline_keyboard": [
+                [{"text": "Указать аллергии", "web_app": {"url": web_app_url}}],
+                [{"text": "Пропустить", "callback_data": SKIP_ALLERGIES_CALLBACK}],
+            ],
         },
     )
+
+
+def bot_menu_markup() -> dict | None:
+    mood = _mini_app_url("mood")
+    sleep = _mini_app_url("sleep")
+    pills = _mini_app_url("pills-diary")
+    allergies = _mini_app_url("allergies")
+    if not (mood and sleep and pills and allergies):
+        return None
+    return {
+        "keyboard": [
+            [{"text": "Оценить настроение", "web_app": {"url": mood}}],
+            [
+                {"text": "Дневник сна", "web_app": {"url": sleep}},
+                {"text": "Дневник таблеток", "web_app": {"url": pills}},
+            ],
+            [
+                {"text": "Указать аллергии", "web_app": {"url": allergies}},
+                {"text": SEND_CONCLUSION_BUTTON},
+            ],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
+
+
+def send_bot_menu(telegram_id: int) -> bool:
+    markup = bot_menu_markup()
+    if not markup:
+        return False
+    return send_telegram_message(telegram_id, BOT_MENU_THANKS_TEXT, markup)
+
+
+def maybe_send_bot_menu(telegram_id: int) -> None:
+    """Once-ever thanks + persistent keyboard after allergies save or skip."""
+    if not _telegram_api_url("sendMessage") or not bot_menu_markup():
+        log.warning("Клавиатура бота: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
+        return
+    if not claim_bot_menu(telegram_id):
+        return
+    if not send_bot_menu(telegram_id):
+        release_bot_menu(telegram_id)
 
 
 def maybe_send_mood_followup(telegram_id: int) -> None:
@@ -988,6 +1051,7 @@ def save_allergies(body: AllergiesIn, authorization: str | None = Header(default
             """,
             (text, uid),
         )
+    maybe_send_bot_menu(uid)
     return _allergies_payload(text, completed=True)
 
 
@@ -1098,6 +1162,47 @@ def doctor_patient_pills(
     payload = _regimen_payload(regimen)
     payload["log"] = [utc_iso_fields(item, "created_at") for item in log]
     return payload
+
+
+def _sleep_item(row) -> dict:
+    item = utc_iso_fields(row, "created_at")
+    hours = item.get("hours")
+    item["hours"] = float(hours) if hours is not None else None
+    return item
+
+
+@app.get("/api/sleep")
+def get_sleep(authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    today = _utc_date()
+    since = (datetime.now(APP_TIMEZONE).date() - timedelta(days=29)).isoformat()
+    items = [_sleep_item(row) for row in list_sleep_log(uid, since, limit=30)]
+    return {"today": today, "items": items}
+
+
+@app.post("/api/sleep")
+def save_sleep(body: SleepIn, authorization: str | None = Header(default=None)):
+    uid = current_user(authorization)
+    require_patient(uid)
+    if body.quality not in SLEEP_QUALITY_VALUES:
+        raise HTTPException(status_code=422, detail="Отметьте, как вы спали.")
+    day = _parse_log_date(body.date)
+    row = write_sleep_log(uid, day, body.quality, body.hours, body.note)
+    return {"ok": True, "item": _sleep_item(row) if row else row}
+
+
+@app.get("/api/doctor/patients/{patient_id}/sleep")
+def doctor_patient_sleep(
+    patient_id: int, authorization: str | None = Header(default=None)
+):
+    uid = current_user(authorization)
+    require_doctor(uid)
+    with conn() as db:
+        ensure_patient_link(db, uid, patient_id)
+    since = (datetime.now(APP_TIMEZONE).date() - timedelta(days=29)).isoformat()
+    items = [_sleep_item(row) for row in list_sleep_log(patient_id, since, limit=30)]
+    return {"items": items}
 
 
 @app.get("/api/moods")

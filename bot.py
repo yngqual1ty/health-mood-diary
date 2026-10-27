@@ -41,6 +41,7 @@ from db import (
     write_pills_log,
     mark_suicide_risk_intro_sent,
     mark_suicide_risk_skipped,
+    mark_allergies_skipped,
     has_completed_suicide_risk,
     suicide_risk_unblocked,
     _utc_date,
@@ -53,10 +54,13 @@ from db import (
 )
 from app import (
     SKIP_SCALES_CALLBACK,
+    SKIP_ALLERGIES_CALLBACK,
+    SEND_CONCLUSION_BUTTON,
     consume_invite,
     maybe_send_osr_patient_followup,
     maybe_send_scales_intro,
     maybe_send_scales_repeat_hint,
+    maybe_send_bot_menu,
 )
 from medication_notifications import (
     confirm_medication_dose,
@@ -114,6 +118,7 @@ def menu():
 SKIP_BUTTON_TEXT = "Пропустить"
 SKIP_CALLBACK_OSR = "skip:osr"
 SKIP_CALLBACK_SCALES = SKIP_SCALES_CALLBACK
+SKIP_CALLBACK_ALLERGIES = SKIP_ALLERGIES_CALLBACK
 
 
 def scale_menu(path, label):
@@ -188,6 +193,8 @@ def pills_menu(day: str):
 # blocked on ОСР. Doctors /start get a Mini App dashboard button, not this patient pack.
 # ШПАНА stays one-time after the first HADS/BAI/BDI completion in app.py.
 # Pills-diary Mini App is one-time after a completed HADS in app.py (skipped if configured).
+# After allergies save or Telegram «Пропустить», patients get a persistent reply
+# keyboard (mood / sleep / pills / allergies / send conclusion). Once per patient.
 
 
 async def send_suicide_risk_intro(message: Message, telegram_id: int) -> bool:
@@ -278,6 +285,20 @@ async def skip_scales_callback(callback: CallbackQuery):
     if is_doctor(user.id) or not suicide_risk_unblocked(user.id):
         return
     maybe_send_scales_repeat_hint(user.id, allow_skip=True)
+
+
+@dp.callback_query(F.data == SKIP_CALLBACK_ALLERGIES)
+async def skip_allergies_callback(callback: CallbackQuery):
+    """Skip allergies: no save required. Send thanks + persistent keyboard once."""
+    user = callback.from_user
+    if user is None:
+        await callback.answer("Не удалось определить пользователя.", show_alert=True)
+        return
+    await callback.answer("Пропущено")
+    if is_doctor(user.id):
+        return
+    mark_allergies_skipped(user.id)
+    maybe_send_bot_menu(user.id)
 
 
 async def _send_reminder(bot: Bot, telegram_id: int) -> bool:
@@ -451,6 +472,10 @@ DOC_SAVED_TEXT = "Документ сохранён, врач увидит ег�
 DOC_NEED_INVITE_TEXT = (
     "Чтобы отправлять документы, нужна ссылка-приглашение от врача."
 )
+DOC_UPLOAD_HINT_TEXT = (
+    "Отправьте заключение файлом в этот чат — PDF, JPEG, PNG, WebP, DOC или DOCX.\n"
+    "Документ сохранится в вашей карте, и врач его увидит."
+)
 DOC_ERROR_TEXT = {
     "too_large": "Файл слишком большой. Можно отправить документ до 20 МБ.",
     "forbidden": (
@@ -490,6 +515,19 @@ async def _download_telegram_file(bot: Bot, file_id: str, declared_size: int) ->
     if len(data) > MAX_DOC_BYTES:
         raise DocumentError("too_large")
     return data
+
+
+@dp.message(F.text == SEND_CONCLUSION_BUTTON)
+async def send_conclusion_hint(message: Message):
+    user = message.from_user
+    if user is None or message.chat.type != "private":
+        return
+    if is_doctor(user.id):
+        return
+    if not is_linked_patient(user.id):
+        await message.answer(DOC_NEED_INVITE_TEXT)
+        return
+    await message.answer(DOC_UPLOAD_HINT_TEXT)
 
 
 @dp.message(F.content_type.in_({ContentType.DOCUMENT, ContentType.PHOTO}))

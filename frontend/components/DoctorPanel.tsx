@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, apiBlob, displayName } from "@/lib/api";
 import { appDay, appToday, formatAppDateTime, lastAppDays } from "@/lib/timezone";
-import type { Allergies, Answer, DoctorPills, Mood, Patient, PatientDocument, Questionnaire, ResultSeries, TreatmentResponse } from "@/lib/types";
+import type { Allergies, Answer, DoctorPills, Mood, Patient, PatientDocument, Questionnaire, ResultSeries, SleepEntry, TreatmentResponse } from "@/lib/types";
 import { ResultsCharts } from "./ResultsCharts";
 
 export function DoctorPanel() {
@@ -12,6 +12,7 @@ export function DoctorPanel() {
   const [moods, setMoods] = useState<Mood[]>([]);
   const [answers, setAnswers] = useState<Answer[]>([]);
   const [pills, setPills] = useState<DoctorPills | null>(null);
+  const [sleep, setSleep] = useState<SleepEntry[] | null>(null);
   const [allergies, setAllergies] = useState<Allergies | null>(null);
   const [documents, setDocuments] = useState<PatientDocument[]>([]);
   const [meta, setMeta] = useState<Record<string, Questionnaire>>({});
@@ -37,16 +38,18 @@ export function DoctorPanel() {
     setName(displayName(patient));
     setTreatment(null);
     setPills(null);
+    setSleep(null);
     setAllergies(null);
     setDocuments([]);
     setStatus("");
     try {
-      const [moodData, answerData, pillsData, allergiesData, docsData] = await Promise.all([
+      const [moodData, answerData, pillsData, sleepData, allergiesData, docsData] = await Promise.all([
         api<{ items: Mood[] }>(`/api/doctor/patients/${patient.telegram_id}/moods`),
         api<{ items: Answer[]; questionnaires: Record<string, Questionnaire> }>(
           `/api/doctor/patients/${patient.telegram_id}/answers`,
         ),
         api<DoctorPills>(`/api/doctor/patients/${patient.telegram_id}/pills`),
+        api<{ items: SleepEntry[] }>(`/api/doctor/patients/${patient.telegram_id}/sleep`),
         api<Allergies>(`/api/doctor/patients/${patient.telegram_id}/allergies`),
         api<{ items: PatientDocument[] }>(`/api/doctor/patients/${patient.telegram_id}/documents`),
       ]);
@@ -54,6 +57,7 @@ export function DoctorPanel() {
       setAnswers(answerData.items);
       setMeta(answerData.questionnaires);
       setPills(pillsData);
+      setSleep(sleepData.items);
       setAllergies(allergiesData);
       setDocuments(docsData.items);
     } catch (error) {
@@ -146,6 +150,7 @@ export function DoctorPanel() {
           {allergies?.text && <p style={{ whiteSpace: "pre-wrap" }}>{allergies.text}</p>}
         </section>
         <ResultsCharts variant="doctor" moods={pastMoods} series={series} />
+        <SleepDiary sleep={sleep} />
         <PillsAdherence pills={pills} />
         <section className="card">
           <h2>Варианты лечения по клиническим рекомендациям</h2>
@@ -274,6 +279,12 @@ const TAKEN_LABELS = {
   partial: "Частично",
 } as const;
 
+const SLEEP_LABELS = {
+  good: "Хорошо",
+  ok: "Средне",
+  bad: "Плохо",
+} as const;
+
 function formatDocDate(value: string) {
   return formatAppDateTime(value);
 }
@@ -352,6 +363,35 @@ function PatientDocuments({
         </div>
       ))}
       {status && <div className="status">{status}</div>}
+    </section>
+  );
+}
+
+function SleepDiary({ sleep }: { sleep: SleepEntry[] | null }) {
+  if (!sleep) {
+    return (
+      <section className="card">
+        <h2>Дневник сна</h2>
+        <p className="muted">Загрузка записей…</p>
+      </section>
+    );
+  }
+  return (
+    <section className="card">
+      <h2>Дневник сна</h2>
+      {!sleep.length && <p className="muted">Пациент ещё не заполнял дневник сна.</p>}
+      {sleep.map((item) => {
+        const extra = [
+          item.hours != null ? `${item.hours} ч` : "",
+          item.note,
+        ].filter(Boolean).join(" — ");
+        return (
+          <div className="entry" key={item.date}>
+            <b>{item.date.split("-").reverse().join(".")} — {SLEEP_LABELS[item.quality]}</b>
+            {extra && <div className="muted">{extra}</div>}
+          </div>
+        );
+      })}
     </section>
   );
 }
