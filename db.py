@@ -1028,3 +1028,61 @@ def delete_session(token):
 def delete_sessions_for_user(telegram_id):
     with conn() as db:
         db.execute("DELETE FROM sessions WHERE telegram_id = ?", (int(telegram_id),))
+
+
+_FLOW_RESET_TABLES = (
+    "answers",
+    "moods",
+    "pills_log",
+    "pills_prompts",
+    "mood_prompts",
+    "hotline_prompts",
+    "regimen",
+    "reminders",
+    "treatment_suggestions",
+    "medication_doses",
+    "medications",
+    "sessions",
+    "links",
+    "invites",
+    "users",
+)
+
+
+def _unlink_patient_document_files(rows):
+    for row in rows:
+        path = _document_path(row["patient_telegram_id"], row["stored_name"] or "")
+        if path is not None and path.is_file():
+            path.unlink(missing_ok=True)
+    docs_root = Path(DOCS_DIR).resolve()
+    if not docs_root.is_dir():
+        return
+    for child in docs_root.iterdir():
+        if not child.is_dir() or not child.name.isdigit():
+            continue
+        for leftover in child.iterdir():
+            if leftover.is_file() or leftover.is_symlink():
+                leftover.unlink(missing_ok=True)
+        try:
+            child.rmdir()
+        except OSError:
+            pass
+
+
+def reset_dev_data():
+    """Wipe all diary data so Telegram /start and after-ОСР messages fire again.
+
+    Deletes users, links, invites, and flow tables. Caller should re-insert ADMIN_DOCTOR_ID.
+    """
+    cleared = []
+    with conn() as db:
+        doc_rows = db.execute(
+            "SELECT patient_telegram_id, stored_name FROM patient_documents"
+        ).fetchall()
+        db.execute("DELETE FROM patient_documents")
+        cleared.append("patient_documents")
+        for table in _FLOW_RESET_TABLES:
+            db.execute(f"DELETE FROM {table}")
+            cleared.append(table)
+    _unlink_patient_document_files(doc_rows)
+    return cleared

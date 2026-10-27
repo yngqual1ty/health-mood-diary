@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -51,6 +52,7 @@ from db import (
     session_telegram_id,
     delete_session,
     delete_sessions_for_user,
+    reset_dev_data,
 )
 from auth import validate_init_data, validate_login_widget, AuthError
 import clinical_rag
@@ -196,19 +198,24 @@ async def bind_session_cookie(request: Request, call_next):
         _session_cookie.reset(token)
 
 
+def _ensure_admin_doctor():
+    if ADMIN_DOCTOR_ID <= 0:
+        return
+    with conn() as db:
+        db.execute(
+            """
+            INSERT INTO users (telegram_id, role)
+            VALUES (?, 'doctor')
+            ON CONFLICT(telegram_id) DO UPDATE SET role = 'doctor'
+            """,
+            (ADMIN_DOCTOR_ID,),
+        )
+
+
 @app.on_event("startup")
 def startup():
     init_db()
-    if ADMIN_DOCTOR_ID > 0:
-        with conn() as db:
-            db.execute(
-                """
-                INSERT INTO users (telegram_id, role)
-                VALUES (?, 'doctor')
-                ON CONFLICT(telegram_id) DO UPDATE SET role = 'doctor'
-                """,
-                (ADMIN_DOCTOR_ID,),
-            )
+    _ensure_admin_doctor()
 
 
 def _upsert_telegram_profile(uid: int, first_name: str, last_name: str, username: str):
@@ -616,15 +623,13 @@ def maybe_send_scales_intro(telegram_id: int) -> None:
         release_scales_intro(telegram_id)
 
 
-def maybe_send_osr_patient_followup(telegram_id: int, definition, answers) -> None:
-    """After completed ОСР: hotline if item sum ≥ 18, otherwise thanks; then starter scales once."""
+def maybe_send_osr_patient_followup(telegram_id: int) -> None:
+    """After completed ОСР: thanks, then starter scales once. Doctor alert is separate."""
     if not _telegram_api_url("sendMessage"):
         log.warning("Ответ после ОСР: нет BOT_TOKEN, пропуск")
         maybe_send_scales_intro(telegram_id)
         return
-    score = questionnaire_item_sum(definition, answers)
-    text = HOTLINE_TEXT if score >= OSR_SUM_THRESHOLD else OSR_THANKS_TEXT
-    send_telegram_message(telegram_id, text)
+    send_telegram_message(telegram_id, OSR_THANKS_TEXT)
     maybe_send_scales_intro(telegram_id)
 
 
@@ -723,8 +728,19 @@ def send_doctor_scale_alert(doctor_id: int, patient_label: str, alert: dict, sta
     return send_telegram_message(doctor_id, text, markup)
 
 
+def maybe_send_patient_hotline(patient_id: int, questionnaire_id: str) -> None:
+    """Serbsky hotline to the patient, at most once per scale per APP_TIMEZONE day."""
+    if not _telegram_api_url("sendMessage"):
+        log.warning("Горячая линия: нет BOT_TOKEN, пропуск")
+        return
+    if not claim_hotline_notice(patient_id, questionnaire_id):
+        return
+    if not send_telegram_message(patient_id, HOTLINE_TEXT):
+        release_hotline_notice(patient_id, questionnaire_id)
+
+
 def maybe_notify_scale_alerts(patient_id: int, questionnaire_id: str, definition, answers, result) -> None:
-    """Doctor if ОСР sum≥18 / HADS-D≥11 / BDI≥30. Below-threshold patient hotline is HADS/BDI only."""
+    """Doctor if ОСР sum≥18 / HADS-D≥11 / BDI≥30. Patient hotline only if HADS-D≥11 or BDI≥30."""
     if questionnaire_id not in ALERT_QUESTIONNAIRES:
         return
     with conn() as db:
@@ -742,29 +758,21 @@ def maybe_notify_scale_alerts(patient_id: int, questionnaire_id: str, definition
     if not user or user["role"] == "doctor":
         return
     alert = doctor_alert_for_result(questionnaire_id, definition, answers, result)
-    if alert:
-        if not link:
-            return
+    if not alert:
+        return
+    if link:
         if not _telegram_api_url("sendMessage"):
             log.warning("Уведомление врачу: нет BOT_TOKEN, пропуск")
-            return
-        stamp = datetime.now(APP_TIMEZONE).strftime("%d.%m.%Y %H:%M %Z")
-        send_doctor_scale_alert(
-            link["doctor_telegram_id"],
-            patient_display_label(user, patient_id),
-            alert,
-            stamp,
-        )
-        return
-    if questionnaire_id == "suicide-risk":
-        return
-    if not _telegram_api_url("sendMessage"):
-        log.warning("Горячая линия: нет BOT_TOKEN, пропуск")
-        return
-    if not claim_hotline_notice(patient_id, questionnaire_id):
-        return
-    if not send_telegram_message(patient_id, HOTLINE_TEXT):
-        release_hotline_notice(patient_id, questionnaire_id)
+        else:
+            stamp = datetime.now(APP_TIMEZONE).strftime("%d.%m.%Y %H:%M %Z")
+            send_doctor_scale_alert(
+                link["doctor_telegram_id"],
+                patient_display_label(user, patient_id),
+                alert,
+                stamp,
+            )
+    if questionnaire_id in {"hads", "bdi"}:
+        maybe_send_patient_hotline(patient_id, questionnaire_id)
 
 
 @app.get("/api/auth/config")
@@ -818,6 +826,24 @@ def auth_logout(
     delete_session(token)
     _clear_session_cookie(response)
     return {"ok": True}
+
+
+def _dev_reset_token_ok(provided: str | None) -> bool:
+    expected = os.getenv("DEV_RESET_TOKEN", "").strip()
+    if not expected:
+        return False
+    left = hashlib.sha256(expected.encode("utf-8")).digest()
+    right = hashlib.sha256((provided or "").encode("utf-8")).digest()
+    return secrets.compare_digest(left, right)
+
+
+@app.post("/api/dev/reset", include_in_schema=False)
+def dev_reset(x_dev_reset_token: str | None = Header(default=None)):
+    if not _dev_reset_token_ok(x_dev_reset_token):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    cleared = reset_dev_data()
+    _ensure_admin_doctor()
+    return {"ok": True, "cleared": cleared}
 
 
 @app.get("/api/me")
@@ -1649,7 +1675,7 @@ def save_answers(body: AnswersIn, authorization: str | None = Header(default=Non
              body.status, json.dumps(result, ensure_ascii=False)),
         )
     if body.questionnaire_id == "suicide-risk" and body.status == "completed":
-        maybe_send_osr_patient_followup(uid, definition, body.answers)
+        maybe_send_osr_patient_followup(uid)
     if body.questionnaire_id in STARTER_QUESTIONNAIRES and body.status == "completed":
         maybe_send_panas_intro(uid)
     if body.questionnaire_id == "hads" and body.status == "completed":

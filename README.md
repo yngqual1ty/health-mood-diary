@@ -14,6 +14,18 @@ Prototype mood diary: Telegram bot + Telegram Mini App + FastAPI + SQLite.
 7. Run the bot: `python bot.py`
 8. Configure the Mini App URL with BotFather. Doctors can invite patients from the app.
 
+## Data reset
+`POST /api/dev/reset` wipes **all** diary data so Telegram onboarding (`/start`, ОСР, HADS/BAI/BDI, ШПАНА, pills, mood) can be rerun. No Telegram auth. Anyone who knows `DEV_RESET_TOKEN` can call it; if that env var is empty, every request is refused (403).
+
+This deletes users, doctor/patient links, invites, answers, moods, pills log/prompts, regimen, reminders, treatment suggestions, medications + dose logs, sessions, and patient document files + rows. The main doctor from `ADMIN_DOCTOR_ID` is re-inserted afterward.
+
+```bash
+curl -X POST 'http://127.0.0.1:8000/api/dev/reset' \
+  -H "X-Dev-Reset-Token: $DEV_RESET_TOKEN"
+```
+
+Response: `{"ok": true, "cleared": ["answers", ...]}`. Treat the token like a password: anyone with it can erase the database.
+
 ## Doctor web cabinet
 Doctors can open the cabinet as a normal website at `$APP_URL/login/` (this deployment: https://bot.koni.moscow/login/), not only inside the Telegram Mini App.
 
