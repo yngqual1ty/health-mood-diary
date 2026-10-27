@@ -167,11 +167,21 @@ export function DoctorPanel() {
                 <p key={flag}><b>⚠️ {flag}</b></p>
               ))}
               {treatment.clinical_summary && <p>{treatment.clinical_summary}</p>}
+              {treatment.missing_information.length > 0 && (
+                <div className="entry">
+                  <b>Что уточнить</b>
+                  {treatment.missing_information.map((item) => (
+                    <p key={item}>{item}</p>
+                  ))}
+                </div>
+              )}
               {treatment.alternatives.map((alt, index) => (
                 <div className="entry" key={`${alt.title}-${index}`}>
                   <b>Вариант {index + 1}: {alt.title}</b>
                   <div className="muted">{alt.approach}</div>
                   {alt.rationale && <p>{alt.rationale}</p>}
+                  {alt.suitable_when && <p className="muted">{alt.suitable_when}</p>}
+                  {alt.monitoring && <p><b>Рекомендуемая оценка:</b> {alt.monitoring}</p>}
                   {alt.cautions && <p><b>Ограничения:</b> {alt.cautions}</p>}
                   {alt.citations.length > 0 && (
                     <div className="muted">Источники: {alt.citations.join(", ")}</div>
