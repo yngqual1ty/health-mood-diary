@@ -82,6 +82,7 @@ REMINDER_TEXT = (
 PATIENT_START_TEXT = (
     "Привет! Я помогу в наблюдении у психиатра: найду проблему, ускорю лечение, напомню о таблеточках."
 )
+DOCTOR_START_TEXT = "Ниже по кнопке ссылка на ваш дашборд."
 SUICIDE_RISK_INTRO_TEXT = (
     "Заполни входную анкету.\n\n"
     "Так проще начать наблюдение вместе с врачом.\n\n"
@@ -139,6 +140,10 @@ def reminder_menu():
     return scale_menu("hads", "Заполнить HADS")
 
 
+def doctor_menu():
+    return scale_menu("doctor", "Открыть дашборд")
+
+
 # Daily pills check-in uses APP_TIMEZONE calendar dates. After PILLS_CHECKIN_HOUR
 # (default 20:00) the bot asks once if a regimen exists and there is no log
 # or prompt for that local day. Independent of the biweekly scale reminders.
@@ -180,7 +185,7 @@ def pills_menu(day: str):
 # Patient /start (including invite, including already linked): always greeting + ОСР
 # (Mini App + «Пропустить»). The 3-scales Telegram message waits until completed
 # or skipped ОСР and is not sent on /start. Mini App HADS/BAI/BDI/ШПАНА are not
-# blocked on ОСР. Doctors /start do not get this patient pack.
+# blocked on ОСР. Doctors /start get a Mini App dashboard button, not this patient pack.
 # ШПАНА stays one-time after the first HADS/BAI/BDI completion in app.py.
 # Pills-diary Mini App is one-time after a completed HADS in app.py (skipped if configured).
 
@@ -232,6 +237,7 @@ async def start(message: Message):
             ),
         )
     if is_doctor(user.id):
+        await message.answer(DOCTOR_START_TEXT, reply_markup=doctor_menu())
         return
     payload = (message.text or "").partition(" ")[2].strip()
     if payload.startswith("invite_"):
