@@ -76,6 +76,7 @@ def init_db():
             username TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             suicide_risk_intro_sent_at TEXT,
+            suicide_risk_skipped_at TEXT,
             starter_intro_sent_at TEXT,
             panas_intro_sent_at TEXT,
             pills_intro_sent_at TEXT,
@@ -210,6 +211,8 @@ def init_db():
                 db.execute(f"ALTER TABLE users ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
         if "suicide_risk_intro_sent_at" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN suicide_risk_intro_sent_at TEXT")
+        if "suicide_risk_skipped_at" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN suicide_risk_skipped_at TEXT")
         if "starter_intro_sent_at" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN starter_intro_sent_at TEXT")
         if "panas_intro_sent_at" not in user_columns:
@@ -262,6 +265,52 @@ def _utc_stamp(now=None):
     return _utc_now(now).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def parse_stored_datetime(value, naive_tz=timezone.utc):
+    """Parse a DB/API timestamp. Naive 'YYYY-MM-DD HH:MM:SS' uses naive_tz (UTC by default)."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=naive_tz)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    if "T" not in text:
+        text = text.replace(" ", "T", 1)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=naive_tz)
+    return parsed
+
+
+def to_utc_iso(value, naive_tz=timezone.utc):
+    """ISO-8601 UTC with Z so clients do not treat SQLite UTC as local time."""
+    parsed = parse_stored_datetime(value, naive_tz=naive_tz)
+    if parsed is None:
+        return value or ""
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def app_calendar_date(value, naive_tz=timezone.utc):
+    """Calendar date in APP_TIMEZONE for a stored timestamp."""
+    parsed = parse_stored_datetime(value, naive_tz=naive_tz)
+    if parsed is None:
+        return (value or "")[:10]
+    return parsed.astimezone(APP_TIMEZONE).strftime("%Y-%m-%d")
+
+
+def utc_iso_fields(row, *keys, naive_tz=timezone.utc):
+    item = dict(row)
+    for key in keys:
+        if item.get(key):
+            item[key] = to_utc_iso(item[key], naive_tz=naive_tz)
+    return item
+
+
 def list_patients_due_for_reminder(interval_days, now=None):
     cutoff = _utc_stamp(_utc_now(now) - timedelta(days=interval_days))
     with conn() as db:
@@ -273,11 +322,14 @@ def list_patients_due_for_reminder(interval_days, now=None):
             LEFT JOIN reminders r ON r.patient_telegram_id = l.patient_telegram_id
             WHERE COALESCE(u.role, 'patient') = 'patient'
               AND COALESCE(r.last_sent_at, l.created_at) <= ?
-              AND EXISTS (
-                SELECT 1 FROM answers a
-                WHERE a.patient_telegram_id = l.patient_telegram_id
-                  AND a.questionnaire_id = 'suicide-risk'
-                  AND COALESCE(a.status, 'completed') = 'completed'
+              AND (
+                u.suicide_risk_skipped_at IS NOT NULL
+                OR EXISTS (
+                  SELECT 1 FROM answers a
+                  WHERE a.patient_telegram_id = l.patient_telegram_id
+                    AND a.questionnaire_id = 'suicide-risk'
+                    AND COALESCE(a.status, 'completed') = 'completed'
+                )
               )
             """,
             (cutoff,),
@@ -440,6 +492,41 @@ def has_completed_suicide_risk(telegram_id):
     return bool(row)
 
 
+def has_skipped_suicide_risk(telegram_id):
+    """True if this patient skipped ОСР via the Telegram button."""
+    with conn() as db:
+        row = db.execute(
+            """
+            SELECT suicide_risk_skipped_at FROM users WHERE telegram_id = ?
+            """,
+            (telegram_id,),
+        ).fetchone()
+    return bool(row and row["suicide_risk_skipped_at"])
+
+
+def suicide_risk_unblocked(telegram_id):
+    """True when Mini App HADS/BDI/BAI/ШПАНА may open: completed or skipped ОСР."""
+    return has_completed_suicide_risk(telegram_id) or has_skipped_suicide_risk(telegram_id)
+
+
+def mark_suicide_risk_skipped(telegram_id, sent_at=None):
+    """Record ОСР skip once. True if this call set `suicide_risk_skipped_at`."""
+    stamp = _utc_stamp(sent_at)
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        cursor = db.execute(
+            """
+            UPDATE users SET suicide_risk_skipped_at = ?
+            WHERE telegram_id = ? AND suicide_risk_skipped_at IS NULL
+            """,
+            (stamp, telegram_id),
+        )
+        return cursor.rowcount == 1
+
+
 def should_send_suicide_risk_intro(telegram_id):
     """True for a patient who has never received the ОСР Mini App intro."""
     with conn() as db:
@@ -505,7 +592,7 @@ def mark_starter_intro_sent(telegram_id, sent_at=None):
 
 
 def claim_scales_intro(telegram_id, sent_at=None):
-    """True if this caller may send the one-time HADS/BDI/BAI message after completed ОСР."""
+    """True if this caller may send the one-time HADS/BDI/BAI message after completed or skipped ОСР."""
     stamp = _utc_stamp(sent_at)
     with conn() as db:
         db.execute(
@@ -518,11 +605,14 @@ def claim_scales_intro(telegram_id, sent_at=None):
             WHERE telegram_id = ?
               AND COALESCE(role, 'patient') = 'patient'
               AND starter_intro_sent_at IS NULL
-              AND EXISTS (
-                SELECT 1 FROM answers
-                WHERE patient_telegram_id = users.telegram_id
-                  AND questionnaire_id = 'suicide-risk'
-                  AND COALESCE(status, 'completed') = 'completed'
+              AND (
+                suicide_risk_skipped_at IS NOT NULL
+                OR EXISTS (
+                  SELECT 1 FROM answers
+                  WHERE patient_telegram_id = users.telegram_id
+                    AND questionnaire_id = 'suicide-risk'
+                    AND COALESCE(status, 'completed') = 'completed'
+                )
               )
             """,
             (stamp, telegram_id),
@@ -609,31 +699,35 @@ def release_pills_intro(telegram_id):
         )
 
 
-def claim_scales_repeat_hint(telegram_id, sent_at=None):
+def claim_scales_repeat_hint(telegram_id, sent_at=None, allow_skip=False):
     """True if this caller may send the one-time HADS/BDI/BAI repeat-hint.
 
     Once ever per patient (`users.scales_repeat_hint_sent_at`), not per scale
     and not on every later completion. The copy explains biweekly reminders;
     sending it again would spam alongside pills/ШПАНА/hotline after HADS.
+    `allow_skip` is the Telegram «Пропустить» path: no completed starter scale yet.
     """
     stamp = _utc_stamp(sent_at)
-    with conn() as db:
-        db.execute(
-            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
-            (telegram_id,),
-        )
-        cursor = db.execute(
-            """
-            UPDATE users SET scales_repeat_hint_sent_at = ?
-            WHERE telegram_id = ?
-              AND COALESCE(role, 'patient') = 'patient'
-              AND scales_repeat_hint_sent_at IS NULL
+    skip_gate = "" if allow_skip else """
               AND EXISTS (
                 SELECT 1 FROM answers
                 WHERE patient_telegram_id = users.telegram_id
                   AND questionnaire_id IN ('hads', 'bdi', 'bai')
                   AND COALESCE(status, 'completed') = 'completed'
               )
+    """
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        cursor = db.execute(
+            f"""
+            UPDATE users SET scales_repeat_hint_sent_at = ?
+            WHERE telegram_id = ?
+              AND COALESCE(role, 'patient') = 'patient'
+              AND scales_repeat_hint_sent_at IS NULL
+              {skip_gate}
             """,
             (stamp, telegram_id),
         )
@@ -648,31 +742,35 @@ def release_scales_repeat_hint(telegram_id):
         )
 
 
-def claim_mood_intro(telegram_id, sent_at=None):
+def claim_mood_intro(telegram_id, sent_at=None, allow_skip=False):
     """True if this caller may send the one-time daily-mood Mini App intro.
 
     Once ever per patient (`users.mood_intro_sent_at`). Same gate as the
-    HADS/BDI/BAI repeat hint: completed starter scale, patient only. Not ОСР
-    or ШПАНА. Call after the hint so Telegram order is hint, then mood.
+    HADS/BDI/BAI repeat hint: completed starter scale or skipped 3-scales,
+    patient only. Not ОСР or ШПАНА. Call after the hint so Telegram order
+    is hint, then mood.
     """
     stamp = _utc_stamp(sent_at)
-    with conn() as db:
-        db.execute(
-            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
-            (telegram_id,),
-        )
-        cursor = db.execute(
-            """
-            UPDATE users SET mood_intro_sent_at = ?
-            WHERE telegram_id = ?
-              AND COALESCE(role, 'patient') = 'patient'
-              AND mood_intro_sent_at IS NULL
+    skip_gate = "" if allow_skip else """
               AND EXISTS (
                 SELECT 1 FROM answers
                 WHERE patient_telegram_id = users.telegram_id
                   AND questionnaire_id IN ('hads', 'bdi', 'bai')
                   AND COALESCE(status, 'completed') = 'completed'
               )
+    """
+    with conn() as db:
+        db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        cursor = db.execute(
+            f"""
+            UPDATE users SET mood_intro_sent_at = ?
+            WHERE telegram_id = ?
+              AND COALESCE(role, 'patient') = 'patient'
+              AND mood_intro_sent_at IS NULL
+              {skip_gate}
             """,
             (stamp, telegram_id),
         )

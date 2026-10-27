@@ -40,6 +40,9 @@ from db import (
     mark_pills_prompt_sent,
     write_pills_log,
     mark_suicide_risk_intro_sent,
+    mark_suicide_risk_skipped,
+    has_completed_suicide_risk,
+    suicide_risk_unblocked,
     _utc_date,
     DocumentError,
     MAX_DOC_BYTES,
@@ -48,7 +51,13 @@ from db import (
     normalize_document_meta,
     save_patient_document,
 )
-from app import consume_invite
+from app import (
+    SKIP_SCALES_CALLBACK,
+    consume_invite,
+    maybe_send_osr_patient_followup,
+    maybe_send_scales_intro,
+    maybe_send_scales_repeat_hint,
+)
 from medication_notifications import (
     confirm_medication_dose,
     medication_reminder_loop,
@@ -57,10 +66,10 @@ from medication_notifications import (
 log = logging.getLogger(__name__)
 dp = Dispatcher()
 
-# Linked patients who already completed ОСР receive one HADS reminder every
+# Linked patients who completed or skipped ОСР receive one HADS reminder every
 # REMINDER_INTERVAL_DAYS (default 14). The first send is due that many days
 # after the doctor link; later sends use last_sent_at. Completing a scale
-# does not reset the clock. HADS is not sent before the first completed ОСР.
+# does not reset the clock. HADS is not sent before the first completed or skipped ОСР.
 REMINDER_TEXT = (
     "Плановая проверка самочувствия\n\n"
     "Это регулярное напоминание раз в две недели. "
@@ -101,11 +110,28 @@ def menu():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Открыть дневник", web_app=WebAppInfo(url=APP_URL))]])
 
 
+SKIP_BUTTON_TEXT = "Пропустить"
+SKIP_CALLBACK_OSR = "skip:osr"
+SKIP_CALLBACK_SCALES = SKIP_SCALES_CALLBACK
+
+
 def scale_menu(path, label):
     if not APP_URL.startswith("https://"):
         raise RuntimeError("APP_URL must be a valid HTTPS URL in .env")
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=label, web_app=WebAppInfo(url=app_path(path)))],
+    ])
+
+
+def suicide_risk_intro_menu():
+    if not APP_URL.startswith("https://"):
+        raise RuntimeError("APP_URL must be a valid HTTPS URL in .env")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="Оценка суицидального риска",
+            web_app=WebAppInfo(url=app_path("suicide-risk")),
+        )],
+        [InlineKeyboardButton(text=SKIP_BUTTON_TEXT, callback_data=SKIP_CALLBACK_OSR)],
     ])
 
 
@@ -151,9 +177,9 @@ def pills_menu(day: str):
 
 
 # Daily mood is the Mini App page /mood/, not a Telegram inline keyboard and not PANAS.
-# Patient /start (including invite, including already linked): always greeting + ОСР.
-# HADS/BAI/BDI wait until completed ОСР in app.py and are not sent on /start.
-# Doctors /start do not get this patient pack.
+# Patient /start (including invite, including already linked): always greeting + ОСР
+# (Mini App + «Пропустить»). HADS/BAI/BDI wait until completed or skipped ОСР in
+# app.py and are not sent on /start. Doctors /start do not get this patient pack.
 # ШПАНА stays one-time after the first HADS/BAI/BDI completion in app.py.
 # Pills-diary Mini App is one-time after a completed HADS in app.py (skipped if configured).
 
@@ -162,7 +188,7 @@ async def send_suicide_risk_intro(message: Message, telegram_id: int) -> bool:
     try:
         await message.answer(
             SUICIDE_RISK_INTRO_TEXT,
-            reply_markup=scale_menu("suicide-risk", "Оценка суицидального риска"),
+            reply_markup=suicide_risk_intro_menu(),
         )
     except (TelegramForbiddenError, TelegramBadRequest) as exc:
         log.warning("Не удалось отправить ОСР %s: %s", telegram_id, exc)
@@ -213,6 +239,38 @@ async def start(message: Message):
     if not await send_suicide_risk_intro(message, user.id):
         return
     mark_suicide_risk_intro_sent(user.id)
+
+
+@dp.callback_query(F.data == SKIP_CALLBACK_OSR)
+async def skip_osr_callback(callback: CallbackQuery):
+    """Skip ОСР: unblock HADS/BDI/BAI, send below-threshold follow-up, no doctor alert."""
+    user = callback.from_user
+    if user is None:
+        await callback.answer("Не удалось определить пользователя.", show_alert=True)
+        return
+    await callback.answer("Пропущено")
+    if is_doctor(user.id):
+        return
+    newly_skipped = mark_suicide_risk_skipped(user.id)
+    if has_completed_suicide_risk(user.id):
+        return
+    if newly_skipped:
+        maybe_send_osr_patient_followup(user.id)
+    else:
+        maybe_send_scales_intro(user.id)
+
+
+@dp.callback_query(F.data == SKIP_CALLBACK_SCALES)
+async def skip_scales_callback(callback: CallbackQuery):
+    """Skip HADS/BDI/BAI for now: repeat-hint + mood intro once. Pills wait for HADS."""
+    user = callback.from_user
+    if user is None:
+        await callback.answer("Не удалось определить пользователя.", show_alert=True)
+        return
+    await callback.answer("Пропущено")
+    if is_doctor(user.id) or not suicide_risk_unblocked(user.id):
+        return
+    maybe_send_scales_repeat_hint(user.id, allow_skip=True)
 
 
 async def _send_reminder(bot: Bot, telegram_id: int) -> bool:

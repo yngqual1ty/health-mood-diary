@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, apiBlob, displayName } from "@/lib/api";
-import { appToday, lastAppDays } from "@/lib/timezone";
+import { appDay, appToday, formatAppDateTime, lastAppDays } from "@/lib/timezone";
 import type { Allergies, Answer, DoctorPills, Mood, Patient, PatientDocument, Questionnaire, ResultSeries, TreatmentResponse } from "@/lib/types";
 import { ResultsCharts } from "./ResultsCharts";
 
@@ -120,8 +120,8 @@ export function DoctorPanel() {
 
   if (selected) {
     const today = appToday();
-    const pastMoods = moods.filter((item) => item.created_at.slice(0, 10) < today);
-    const pastAnswers = answers.filter((item) => item.created_at.slice(0, 10) < today);
+    const pastMoods = moods.filter((item) => appDay(item.created_at) < today);
+    const pastAnswers = answers.filter((item) => appDay(item.created_at) < today);
     const series = buildSeries(pastAnswers, meta);
     return (
       <>
@@ -232,7 +232,7 @@ function buildSeries(
   const byId: Record<string, Record<string, Answer>> = {};
   answers.forEach((item) => {
     if (item.status !== "completed" || !meta[item.questionnaire_id]) return;
-    const day = item.created_at.slice(0, 10);
+    const day = appDay(item.created_at);
     byId[item.questionnaire_id] ??= {};
     byId[item.questionnaire_id][day] = item;
   });
@@ -265,10 +265,7 @@ const TAKEN_LABELS = {
 } as const;
 
 function formatDocDate(value: string) {
-  const [day, time] = value.split(" ");
-  if (!day) return value;
-  const date = day.split("-").reverse().join(".");
-  return time ? `${date} ${time.slice(0, 5)}` : date;
+  return formatAppDateTime(value);
 }
 
 function formatSize(bytes: number) {

@@ -16,6 +16,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from db import app_calendar_date
+
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -338,8 +340,8 @@ def summarize_patient(moods: list[dict], answers: list[dict], definitions: dict[
         scores = [m["score"] for m in moods]
         recent, earlier = scores[:7], scores[7:21]
         line = (
-            f"Дневник настроения: записей {len(scores)} с {moods[-1]['created_at'][:10]} "
-            f"по {moods[0]['created_at'][:10]}, средняя оценка {sum(scores) / len(scores):.1f}/5"
+            f"Дневник настроения: записей {len(scores)} с {app_calendar_date(moods[-1]['created_at'])} "
+            f"по {app_calendar_date(moods[0]['created_at'])}, средняя оценка {sum(scores) / len(scores):.1f}/5"
         )
         if earlier:
             line += f"; последние 7 записей {sum(recent) / len(recent):.1f}/5 против {sum(earlier) / len(earlier):.1f}/5 ранее"
@@ -366,7 +368,7 @@ def summarize_patient(moods: list[dict], answers: list[dict], definitions: dict[
         result = item.get("result") or {}
         definition = definitions.get(qid, {})
         name = definition.get("title", qid)
-        date = item["created_at"][:10]
+        date = app_calendar_date(item["created_at"])
         if result.get("type") == "sum":
             facts.append(f"{name} ({date}): {result.get('score')} баллов — {result.get('interpretation')}.")
             retrieval_terms.append(f"{name} {result.get('interpretation', '')}")
@@ -387,7 +389,7 @@ def summarize_patient(moods: list[dict], answers: list[dict], definitions: dict[
         suicidal = int((bdi.get("payload") or {}).get("bdi-9", 0) or 0)
         if suicidal > 0:
             red_flags.append(
-                f"BDI, пункт 9 (суицидальные мысли): {suicidal}/3 от {bdi['created_at'][:10]}. "
+                f"BDI, пункт 9 (суицидальные мысли): {suicidal}/3 от {app_calendar_date(bdi['created_at'])}. "
                 "Требуется очная оценка суицидального риска."
             )
             retrieval_terms.append("суицидальный риск оценка")
@@ -398,7 +400,7 @@ def summarize_patient(moods: list[dict], answers: list[dict], definitions: dict[
     if suicide_risk:
         payload = suicide_risk.get("payload") or {}
         result = suicide_risk.get("result") or {}
-        date = suicide_risk["created_at"][:10]
+        date = app_calendar_date(suicide_risk["created_at"])
         score = int(result.get("score") or 0)
         interpretation = str(result.get("interpretation") or "")
         intent = int(payload.get("suicide-risk-4", 0) or 0)

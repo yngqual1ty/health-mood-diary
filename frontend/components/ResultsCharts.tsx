@@ -11,6 +11,7 @@ import {
   YAxis,
 } from "recharts";
 import { CHART_ORDER, DOMAIN_COLORS, formatDay } from "@/lib/questionnaires";
+import { appDay } from "@/lib/timezone";
 import type { Mood, ResultSeries } from "@/lib/types";
 
 type ChartRow = { date: string; [key: string]: number | string };
@@ -67,7 +68,7 @@ export function ResultsCharts({
   variant?: "doctor";
 }) {
   const moodByDay = new Map<string, number>();
-  moods.forEach((mood) => moodByDay.set(mood.created_at.slice(0, 10), mood.score));
+  moods.forEach((mood) => moodByDay.set(appDay(mood.created_at), mood.score));
   const moodRows = [...moodByDay.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, score]) => ({ date, score }));

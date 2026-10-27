@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { ScaleList } from "@/components/ScaleList";
 import { api } from "@/lib/api";
 import { STARTER_SCALES, type PatientScaleLink } from "@/lib/questionnaires";
+import { formatAppDateTime, formatAppRelative } from "@/lib/timezone";
 import type { Me, Questionnaire } from "@/lib/types";
 
 const REQUIRES_SUICIDE_RISK = new Set(["hads", "bai", "bdi", "panas"]);
@@ -66,6 +67,7 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
   const [saving, setSaving] = useState(false);
   const [blocked, setBlocked] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [savedAt, setSavedAt] = useState("");
   const [remainingScales, setRemainingScales] = useState<PatientScaleLink[]>([]);
 
   useEffect(() => {
@@ -74,6 +76,7 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
     setBlocked(false);
     setStatus("");
     setJustSaved(false);
+    setSavedAt("");
     setRemainingScales([]);
     async function load() {
       try {
@@ -126,7 +129,7 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
     setSaving(true);
     setStatus("Сохранение…");
     try {
-      await api("/api/answers", {
+      const saved = await api<{ created_at?: string }>("/api/answers", {
         method: "POST",
         body: JSON.stringify({
           questionnaire_id: questionnaireId,
@@ -137,6 +140,7 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
       const nextScales = await remainingAfterSubmit(questionnaireId);
       setAnswers({});
       setRemainingScales(nextScales);
+      setSavedAt(saved.created_at || "");
       setJustSaved(true);
       setStatus("");
     } catch (error) {
@@ -151,6 +155,11 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
       <>
         <section className="card thanks">
           <p>{THANKS_TEXT}</p>
+          {savedAt && (
+            <p className="muted">
+              Сохранено {formatAppRelative(savedAt)} · {formatAppDateTime(savedAt)}
+            </p>
+          )}
         </section>
         {remainingScales.length > 0 && (
           <ScaleList
@@ -179,7 +188,9 @@ export function QuestionnaireForm({ questionnaireId }: { questionnaireId: string
       {data.latest && (
         <section className="card">
           <h2>Последний результат</h2>
-          <p className="muted">{data.latest.created_at}</p>
+          <p className="muted">
+            {formatAppRelative(data.latest.created_at)} · {formatAppDateTime(data.latest.created_at)}
+          </p>
           <ResultView questionnaire={data} />
         </section>
       )}

@@ -30,6 +30,10 @@ from db import (
     write_pills_log,
     PILLS_TAKEN_VALUES,
     _utc_date,
+    _utc_stamp,
+    app_calendar_date,
+    to_utc_iso,
+    utc_iso_fields,
     claim_panas_intro,
     release_panas_intro,
     claim_pills_intro,
@@ -44,7 +48,7 @@ from db import (
     release_mood_followup,
     claim_hotline_notice,
     release_hotline_notice,
-    has_completed_suicide_risk,
+    suicide_risk_unblocked,
     delete_patient_document,
     list_patient_documents,
     patient_document_file,
@@ -65,6 +69,7 @@ SCALES_INTRO_TEXT = (
     "Ниже я отправил тебе 3 дополнительных входных шкалы, они измерят твой уровень депрессии и тревоги.\n\n"
     "До тех пор пока у тебя нет прикрепленного врача, мы НИКОМУ не передаем эти данные"
 )
+SKIP_SCALES_CALLBACK = "skip:scales"
 OSR_THANKS_TEXT = "Спасибо за твой ответ! Это помогает врачу лучше понять тебя"
 # ОСР chart score is C-SSRS max 0–5 and cannot reach 18. Doctor alert uses
 # the sum of all nine item values (max 23). See questionnaires.json scoring.rules.
@@ -538,12 +543,12 @@ def send_mood_intro(telegram_id: int) -> bool:
     )
 
 
-def maybe_send_mood_intro(telegram_id: int) -> None:
+def maybe_send_mood_intro(telegram_id: int, allow_skip: bool = False) -> None:
     """One-time mood Mini App after the HADS/BDI/BAI repeat hint. Not ОСР/ШПАНА."""
     if not _telegram_api_url("sendMessage") or not _mini_app_url("mood"):
         log.warning("Шкала настроения: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
         return
-    if not claim_mood_intro(telegram_id):
+    if not claim_mood_intro(telegram_id, allow_skip=allow_skip):
         return
     if not send_mood_intro(telegram_id):
         release_mood_intro(telegram_id)
@@ -575,7 +580,7 @@ def maybe_send_mood_followup(telegram_id: int) -> None:
         release_mood_followup(telegram_id)
 
 
-def maybe_send_scales_repeat_hint(telegram_id: int) -> None:
+def maybe_send_scales_repeat_hint(telegram_id: int, allow_skip: bool = False) -> None:
     """Once-ever Telegram hint after first completed HADS, BDI, or BAI.
 
     Debounce: `users.scales_repeat_hint_sent_at` — one send per patient, ever.
@@ -584,17 +589,19 @@ def maybe_send_scales_repeat_hint(telegram_id: int) -> None:
     Not sent after ОСР or ШПАНА.
     After a successful hint, send the one-time mood Mini App (hint, then mood).
     If the hint already went out, still try mood so a failed first send can retry.
+    `allow_skip` is the Telegram «Пропустить» on the 3-scales message: same pack,
+    no pills intro (pills still wait for a completed HADS).
     """
     if not _telegram_api_url("sendMessage"):
         log.warning("Повтор шкал: нет BOT_TOKEN, пропуск")
         return
-    if not claim_scales_repeat_hint(telegram_id):
-        maybe_send_mood_intro(telegram_id)
+    if not claim_scales_repeat_hint(telegram_id, allow_skip=allow_skip):
+        maybe_send_mood_intro(telegram_id, allow_skip=allow_skip)
         return
     if not send_telegram_message(telegram_id, SCALES_REPEAT_HINT_TEXT):
         release_scales_repeat_hint(telegram_id)
         return
-    maybe_send_mood_intro(telegram_id)
+    maybe_send_mood_intro(telegram_id, allow_skip=allow_skip)
 
 
 def send_scales_intro(telegram_id: int) -> bool:
@@ -611,13 +618,14 @@ def send_scales_intro(telegram_id: int) -> bool:
                 [{"text": "HADS", "web_app": {"url": hads_url}}],
                 [{"text": "BDI", "web_app": {"url": bdi_url}}],
                 [{"text": "BAI", "web_app": {"url": bai_url}}],
+                [{"text": "Пропустить", "callback_data": SKIP_SCALES_CALLBACK}],
             ],
         },
     )
 
 
 def maybe_send_scales_intro(telegram_id: int) -> None:
-    """One HADS/BDI/BAI message after first completed ОСР (`starter_intro_sent_at`)."""
+    """One HADS/BDI/BAI message after first completed or skipped ОСР (`starter_intro_sent_at`)."""
     if not _telegram_api_url("sendMessage") or not _mini_app_url("hads"):
         log.warning("Стартовые шкалы: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
         return
@@ -628,12 +636,18 @@ def maybe_send_scales_intro(telegram_id: int) -> None:
 
 
 def maybe_send_osr_patient_followup(telegram_id: int) -> None:
-    """After completed ОСР: thanks, then starter scales once. Doctor alert is separate."""
+    """After completed or skipped ОСР: thanks, then starter scales once. Doctor alert is separate."""
     if not _telegram_api_url("sendMessage"):
         log.warning("Ответ после ОСР: нет BOT_TOKEN, пропуск")
         maybe_send_scales_intro(telegram_id)
         return
-    send_telegram_message(telegram_id, OSR_THANKS_TEXT)
+    with conn() as db:
+        row = db.execute(
+            "SELECT starter_intro_sent_at FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+    if not (row and row["starter_intro_sent_at"]):
+        send_telegram_message(telegram_id, OSR_THANKS_TEXT)
     maybe_send_scales_intro(telegram_id)
 
 
@@ -873,7 +887,7 @@ def me(authorization: str | None = Header(default=None)):
         "display_name": user["display_name"],
         "linked": bool(link),
         "doctor_telegram_id": link["doctor_telegram_id"] if link else None,
-        "suicide_risk_completed": has_completed_suicide_risk(uid),
+        "suicide_risk_completed": suicide_risk_unblocked(uid),
     }
 
 
@@ -927,7 +941,7 @@ def list_patient_notes(authorization: str | None = Header(default=None)):
             """,
             (uid,),
         ).fetchall()
-    return {"items": [dict(row) for row in rows]}
+    return {"items": [utc_iso_fields(row, "created_at", naive_tz=APP_TIMEZONE) for row in rows]}
 
 
 @app.post("/api/notes")
@@ -950,7 +964,11 @@ def create_patient_note(
             (uid, text, created_at),
         )
         note_id = cursor.lastrowid
-    return {"id": note_id, "text": text, "created_at": created_at}
+    return {
+        "id": note_id,
+        "text": text,
+        "created_at": to_utc_iso(created_at, naive_tz=APP_TIMEZONE),
+    }
 
 
 @app.post("/api/allergies")
@@ -1017,7 +1035,7 @@ def _regimen_payload(row):
     return {
         "configured": True,
         "items": row["items"],
-        "created_at": row["created_at"],
+        "created_at": to_utc_iso(row["created_at"]),
     }
 
 
@@ -1064,7 +1082,7 @@ def save_pills_log(body: PillsLogIn, authorization: str | None = Header(default=
         raise HTTPException(status_code=422, detail="Отметьте: yes, no или partial.")
     day = _parse_log_date(body.date)
     row, _created = write_pills_log(uid, day, body.taken, body.note, overwrite=True)
-    return {"ok": True, "item": row}
+    return {"ok": True, "item": utc_iso_fields(row, "created_at") if row else row}
 
 
 @app.get("/api/doctor/patients/{patient_id}/pills")
@@ -1079,7 +1097,7 @@ def doctor_patient_pills(
     since = (datetime.now(APP_TIMEZONE).date() - timedelta(days=29)).isoformat()
     log = list_pills_log(patient_id, since, limit=30)
     payload = _regimen_payload(regimen)
-    payload["log"] = log
+    payload["log"] = [utc_iso_fields(item, "created_at") for item in log]
     return payload
 
 
@@ -1093,7 +1111,7 @@ def list_moods(authorization: str | None = Header(default=None)):
                WHERE patient_telegram_id = ? ORDER BY id DESC LIMIT 30""",
             (uid,),
         ).fetchall()
-    return {"items": [dict(row) for row in rows]}
+    return {"items": [utc_iso_fields(row, "created_at", naive_tz=APP_TIMEZONE) for row in rows]}
 
 
 @app.get("/api/questionnaires")
@@ -1111,9 +1129,7 @@ def list_questionnaires(authorization: str | None = Header(default=None)):
     latest = {}
     for row in rows:
         if row["questionnaire_id"] not in latest:
-            item = dict(row)
-            item["result"] = json.loads(item["result"] or "{}")
-            latest[row["questionnaire_id"]] = item
+            latest[row["questionnaire_id"]] = parse_answer_row(row)
     return {
         "items": [
             {**definition, "latest": latest.get(questionnaire_id)}
@@ -1124,7 +1140,7 @@ def list_questionnaires(authorization: str | None = Header(default=None)):
 
 
 def parse_answer_row(row) -> dict:
-    item = dict(row)
+    item = utc_iso_fields(row, "created_at")
     for key in ("payload", "result"):
         if key not in item:
             continue
@@ -1144,7 +1160,7 @@ def series_from_answers(answers: list[dict], definitions: dict) -> dict:
         qid = item["questionnaire_id"]
         if qid not in definitions:
             continue
-        day = (item.get("created_at") or "")[:10]
+        day = app_calendar_date(item.get("created_at"))
         if not day:
             continue
         by_id.setdefault(qid, {})[day] = item
@@ -1201,13 +1217,13 @@ def my_results(authorization: str | None = Header(default=None)):
     }
     with conn() as db:
         moods = [
-            dict(row)
+            utc_iso_fields(row, "created_at", naive_tz=APP_TIMEZONE)
             for row in db.execute(
                 """SELECT score, emotions, created_at FROM moods
                    WHERE patient_telegram_id = ? ORDER BY id ASC""",
                 (uid,),
             ).fetchall()
-            if (row["created_at"] or "")[:10] < today
+            if app_calendar_date(row["created_at"], naive_tz=APP_TIMEZONE) < today
         ]
         answers = [
             parse_answer_row(row)
@@ -1216,7 +1232,7 @@ def my_results(authorization: str | None = Header(default=None)):
                    WHERE patient_telegram_id = ? ORDER BY id ASC""",
                 (uid,),
             ).fetchall()
-            if (row["created_at"] or "")[:10] < today
+            if app_calendar_date(row["created_at"]) < today
         ]
     return {
         "today": today,
@@ -1249,7 +1265,7 @@ def doctor_patients(authorization: str | None = Header(default=None)):
             """,
             (uid,),
         ).fetchall()
-    return {"items": [dict(row) for row in rows]}
+    return {"items": [utc_iso_fields(row, "last_mood_at", naive_tz=APP_TIMEZONE) for row in rows]}
 
 
 @app.post("/api/admin/doctors")
@@ -1370,7 +1386,9 @@ def doctor_patient_documents(
     require_doctor(uid)
     with conn() as db:
         ensure_patient_link(db, uid, patient_id)
-    return {"items": list_patient_documents(patient_id)}
+    return {
+        "items": [utc_iso_fields(item, "created_at") for item in list_patient_documents(patient_id)]
+    }
 
 
 @app.get("/api/doctor/patients/{patient_id}/documents/{doc_id}")
@@ -1418,7 +1436,7 @@ def doctor_patient_moods(
                WHERE patient_telegram_id = ? ORDER BY id DESC LIMIT 100""",
             (patient_id,),
         ).fetchall()
-    return {"items": [dict(row) for row in rows]}
+    return {"items": [utc_iso_fields(row, "created_at", naive_tz=APP_TIMEZONE) for row in rows]}
 
 
 @app.get("/api/doctor/patients/{patient_id}/answers")
@@ -1439,15 +1457,7 @@ def doctor_patient_answers(
     result = []
     questionnaire_metadata = {}
     for row in rows:
-        item = dict(row)
-        try:
-            item["payload"] = json.loads(item["payload"])
-        except (TypeError, json.JSONDecodeError):
-            item["payload"] = {}
-        try:
-            item["result"] = json.loads(item["result"] or "{}")
-        except (TypeError, json.JSONDecodeError):
-            item["result"] = {}
+        item = parse_answer_row(row)
         definition = definitions.get(item["questionnaire_id"])
         if definition:
             questionnaire_metadata[item["questionnaire_id"]] = {
@@ -1641,23 +1651,20 @@ def treatment_options(
         ensure_patient_link(db, uid, patient_id)
         moods, answers = [], []
         if body.include_patient_data:
-            moods = [dict(row) for row in db.execute(
-                """SELECT score, emotions, created_at FROM moods
-                   WHERE patient_telegram_id = ? ORDER BY id DESC LIMIT 60""",
-                (patient_id,),
-            ).fetchall()]
+            moods = [
+                utc_iso_fields(row, "created_at", naive_tz=APP_TIMEZONE)
+                for row in db.execute(
+                    """SELECT score, emotions, created_at FROM moods
+                       WHERE patient_telegram_id = ? ORDER BY id DESC LIMIT 60""",
+                    (patient_id,),
+                ).fetchall()
+            ]
             for row in db.execute(
                 """SELECT questionnaire_id, payload, status, result, created_at FROM answers
                    WHERE patient_telegram_id = ? ORDER BY id DESC LIMIT 100""",
                 (patient_id,),
             ).fetchall():
-                item = dict(row)
-                for key in ("payload", "result"):
-                    try:
-                        item[key] = json.loads(item[key] or "{}")
-                    except json.JSONDecodeError:
-                        item[key] = {}
-                answers.append(item)
+                answers.append(parse_answer_row(row))
 
     patient = None
     if body.include_patient_data:
@@ -1680,7 +1687,7 @@ def treatment_options(
 def save_answers(body: AnswersIn, authorization: str | None = Header(default=None)):
     uid = current_user(authorization)
     require_patient(uid)
-    if body.questionnaire_id in GATED_AFTER_OSR and not has_completed_suicide_risk(uid):
+    if body.questionnaire_id in GATED_AFTER_OSR and not suicide_risk_unblocked(uid):
         raise HTTPException(
             status_code=403,
             detail="Сначала заполните оценку суицидального риска.",
@@ -1721,12 +1728,13 @@ def save_answers(body: AnswersIn, authorization: str | None = Header(default=Non
             if isinstance(value, bool) or not isinstance(value, int) or value not in allowed_values:
                 raise HTTPException(status_code=422, detail="Ответ содержит недопустимое значение.")
         result = score_questionnaire(definition, body.answers)
+    created_at = _utc_stamp()
     with conn() as db:
         db.execute(
-            """INSERT INTO answers(patient_telegram_id, questionnaire_id, payload, status, result)
-               VALUES (?, ?, ?, ?, ?)""",
+            """INSERT INTO answers(patient_telegram_id, questionnaire_id, payload, status, result, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             (uid, body.questionnaire_id, json.dumps(body.answers, ensure_ascii=False),
-             body.status, json.dumps(result, ensure_ascii=False)),
+             body.status, json.dumps(result, ensure_ascii=False), created_at),
         )
     if body.questionnaire_id == "suicide-risk" and body.status == "completed":
         maybe_send_osr_patient_followup(uid)
@@ -1738,7 +1746,12 @@ def save_answers(body: AnswersIn, authorization: str | None = Header(default=Non
         maybe_send_scales_repeat_hint(uid)
     if body.status == "completed":
         maybe_notify_scale_alerts(uid, body.questionnaire_id, definition, body.answers, result)
-    return {"ok": True, "status": body.status, "result": result}
+    return {
+        "ok": True,
+        "status": body.status,
+        "result": result,
+        "created_at": to_utc_iso(created_at),
+    }
 
 
 @app.post("/api/doctor/invites")

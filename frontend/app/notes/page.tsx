@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "@/lib/api";
+import { formatAppDateTime } from "@/lib/timezone";
 import type { PatientNote } from "@/lib/types";
 
 export default function NotesPage() {
@@ -58,7 +59,9 @@ export default function NotesPage() {
           {notes.map((note) => (
             <article className="note-message" key={note.id}>
               <p>{note.text}</p>
-              <time className="note-time">{note.created_at}</time>
+              <time className="note-time" dateTime={note.created_at}>
+                {formatAppDateTime(note.created_at)}
+              </time>
             </article>
           ))}
           <div ref={chatEnd} />

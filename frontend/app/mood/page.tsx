@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { appToday } from "@/lib/timezone";
+import { appDay, appToday } from "@/lib/timezone";
 import type { Mood } from "@/lib/types";
 
 const OPTIONS = [
@@ -54,7 +54,7 @@ export default function MoodPage() {
     api<{ items: Mood[] }>("/api/moods")
       .then((data) => {
         const today = appToday();
-        const latest = data.items.find((item) => item.created_at.slice(0, 10) === today);
+        const latest = data.items.find((item) => appDay(item.created_at) === today);
         if (latest) {
           setSelected(latest.score);
           setSaved(latest.score);
