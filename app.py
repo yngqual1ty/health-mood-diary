@@ -493,8 +493,8 @@ def maybe_send_panas_intro(telegram_id: int) -> None:
         return
     if not claim_panas_intro(telegram_id):
         return
-    if not send_panas_intro(telegram_id):
-        release_panas_intro(telegram_id)
+    # if not send_panas_intro(telegram_id):
+    #     release_panas_intro(telegram_id)
 
 
 def send_pills_intro(telegram_id: int) -> bool:
