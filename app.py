@@ -117,13 +117,14 @@ MOOD_FOLLOWUP_TEXT = (
     "\n"
     "По кнопке ниже - можешь указать аллергии"
 )
-# Once ever after allergies save or Telegram «Пропустить». Persistent reply
+# Once ever after allergies save or Telegram «Пропустить». Inline Mini App
 # keyboard, not a daily reminder. Later allergy edits must not send this again.
 BOT_MENU_THANKS_TEXT = (
     "Спасибо за заполнение!\n"
     "Отправил тебе клавиатуру для заполнения дневника сна, таблеток, и вообще всего функционала бота"
 )
 SEND_CONCLUSION_BUTTON = "Отправить заключение"
+SEND_CONCLUSION_CALLBACK = "send:conclusion"
 HOTLINE_TEXT = (
     "Если Вы чувствуете необходимость в экстренной помощи - телефон доверия • "
     "ФГБУ «НМИЦ ПН им. В.П. Сербского» Минздрава России. "
@@ -477,7 +478,7 @@ def _web_app_keyboard_button(text: str, path: str) -> dict | None:
     url = _mini_app_url(path)
     if not url:
         return None
-    return {"text": text, "type": "web_app", "web_app": {"url": url}}
+    return {"text": text, "web_app": {"url": url}}
 
 
 def _send_message_reply_markup(reply_markup: dict) -> dict:
@@ -618,13 +619,11 @@ def bot_menu_markup() -> dict | None:
     if not (mood and sleep and pills and allergies):
         return None
     return {
-        "keyboard": [
+        "inline_keyboard": [
             [mood],
             [sleep, pills],
-            [allergies, {"text": SEND_CONCLUSION_BUTTON}],
+            [allergies, {"text": SEND_CONCLUSION_BUTTON, "callback_data": SEND_CONCLUSION_CALLBACK}],
         ],
-        "resize_keyboard": True,
-        "is_persistent": True,
     }
 
 
@@ -636,7 +635,7 @@ def send_bot_menu(telegram_id: int) -> bool:
 
 
 def maybe_send_bot_menu(telegram_id: int) -> None:
-    """Once-ever thanks + persistent keyboard after allergies save or skip."""
+    """Once-ever thanks + inline Mini App keyboard after allergies save or skip."""
     if not _telegram_api_url("sendMessage") or not bot_menu_markup():
         log.warning("Клавиатура бота: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
         return
@@ -701,10 +700,17 @@ def send_scales_intro(telegram_id: int) -> bool:
     )
 
 
-def maybe_send_scales_intro(telegram_id: int) -> None:
-    """One HADS/BDI/BAI message after first completed or skipped ОСР (`starter_intro_sent_at`)."""
+def maybe_send_scales_intro(telegram_id: int, *, force: bool = False) -> None:
+    """HADS/BDI/BAI message after completed or skipped ОСР.
+
+    One-shot via `starter_intro_sent_at` unless `force` (later Telegram «Пропустить»).
+    """
     if not _telegram_api_url("sendMessage") or not _mini_app_url("hads"):
         log.warning("Стартовые шкалы: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
+        return
+    if force:
+        if send_scales_intro(telegram_id):
+            claim_scales_intro(telegram_id)
         return
     if not claim_scales_intro(telegram_id):
         return
@@ -712,11 +718,19 @@ def maybe_send_scales_intro(telegram_id: int) -> None:
         release_scales_intro(telegram_id)
 
 
-def maybe_send_osr_patient_followup(telegram_id: int) -> None:
-    """After completed or skipped ОСР: thanks, then starter scales once. Doctor alert is separate."""
+def maybe_send_osr_patient_followup(telegram_id: int, *, force: bool = False) -> None:
+    """After completed or skipped ОСР: thanks, then starter scales. Doctor alert is separate.
+
+    Completing ОСР in the Mini App stays one-shot. Telegram «Пропустить» passes
+    `force=True` so thanks + HADS/BDI/BAI are sent again on every skip.
+    """
     if not _telegram_api_url("sendMessage"):
         log.warning("Ответ после ОСР: нет BOT_TOKEN, пропуск")
-        maybe_send_scales_intro(telegram_id)
+        maybe_send_scales_intro(telegram_id, force=force)
+        return
+    if force:
+        send_telegram_message(telegram_id, OSR_THANKS_TEXT)
+        maybe_send_scales_intro(telegram_id, force=True)
         return
     with conn() as db:
         row = db.execute(

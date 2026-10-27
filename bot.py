@@ -28,9 +28,7 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
     Message,
-    ReplyKeyboardMarkup,
     WebAppInfo,
 )
 
@@ -50,7 +48,6 @@ from db import (
     mark_suicide_risk_intro_sent,
     mark_suicide_risk_skipped,
     mark_allergies_skipped,
-    has_completed_suicide_risk,
     suicide_risk_unblocked,
     _utc_date,
     DocumentError,
@@ -64,9 +61,9 @@ from app import (
     SKIP_SCALES_CALLBACK,
     SKIP_ALLERGIES_CALLBACK,
     SEND_CONCLUSION_BUTTON,
+    SEND_CONCLUSION_CALLBACK,
     consume_invite,
     maybe_send_osr_patient_followup,
-    maybe_send_scales_intro,
     maybe_send_scales_repeat_hint,
     maybe_send_bot_menu,
 )
@@ -158,24 +155,20 @@ def doctor_menu():
 
 
 def persistent_bot_menu():
-    """Reply keyboard Mini App buttons (same URLs as inline web_app). HTTPS APP_URL required."""
+    """Inline Mini App buttons (same URLs as app.py bot_menu_markup). HTTPS APP_URL required."""
     if not APP_URL.startswith("https://"):
         raise RuntimeError("APP_URL must be a valid HTTPS URL in .env")
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Оценить настроение", web_app=WebAppInfo(url=app_path("mood")))],
-            [
-                KeyboardButton(text="Дневник сна", web_app=WebAppInfo(url=app_path("sleep"))),
-                KeyboardButton(text="Дневник таблеток", web_app=WebAppInfo(url=app_path("pills-diary"))),
-            ],
-            [
-                KeyboardButton(text="Указать аллергии", web_app=WebAppInfo(url=app_path("allergies"))),
-                KeyboardButton(text=SEND_CONCLUSION_BUTTON),
-            ],
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оценить настроение", web_app=WebAppInfo(url=app_path("mood")))],
+        [
+            InlineKeyboardButton(text="Дневник сна", web_app=WebAppInfo(url=app_path("sleep"))),
+            InlineKeyboardButton(text="Дневник таблеток", web_app=WebAppInfo(url=app_path("pills-diary"))),
         ],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
+        [
+            InlineKeyboardButton(text="Указать аллергии", web_app=WebAppInfo(url=app_path("allergies"))),
+            InlineKeyboardButton(text=SEND_CONCLUSION_BUTTON, callback_data=SEND_CONCLUSION_CALLBACK),
+        ],
+    ])
 
 
 # Daily pills check-in uses APP_TIMEZONE calendar dates. After PILLS_CHECKIN_HOUR
@@ -222,7 +215,7 @@ def pills_menu(day: str):
 # blocked on ОСР. Doctors /start get a Mini App dashboard button, not this patient pack.
 # ШПАНА stays one-time after the first HADS/BAI/BDI completion in app.py.
 # Pills-diary Mini App is one-time after a completed HADS in app.py (skipped if configured).
-# After allergies save or Telegram «Пропустить», patients get a persistent reply
+# After allergies save or Telegram «Пропустить», patients get an inline
 # keyboard (mood / sleep / pills / allergies / send conclusion). Once per patient.
 
 
@@ -286,7 +279,12 @@ async def start(message: Message):
 
 @dp.callback_query(F.data == SKIP_CALLBACK_OSR)
 async def skip_osr_callback(callback: CallbackQuery):
-    """Skip ОСР: record skip, send 3-scales follow-up, no doctor alert."""
+    """Skip ОСР: record skip, send thanks + 3-scales, no doctor alert or hotline.
+
+    Every tap after /start must work for the same user: after a previous skip,
+    after they already completed ОСР, and after another /start. Mini App
+    questionnaires stay ungated. Doctors are unchanged.
+    """
     user = callback.from_user
     if user is None:
         await callback.answer("Не удалось определить пользователя.", show_alert=True)
@@ -294,13 +292,8 @@ async def skip_osr_callback(callback: CallbackQuery):
     await callback.answer("Пропущено")
     if is_doctor(user.id):
         return
-    newly_skipped = mark_suicide_risk_skipped(user.id)
-    if has_completed_suicide_risk(user.id):
-        return
-    if newly_skipped:
-        maybe_send_osr_patient_followup(user.id)
-    else:
-        maybe_send_scales_intro(user.id)
+    mark_suicide_risk_skipped(user.id)
+    maybe_send_osr_patient_followup(user.id, force=True)
 
 
 @dp.callback_query(F.data == SKIP_CALLBACK_SCALES)
@@ -318,7 +311,7 @@ async def skip_scales_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == SKIP_CALLBACK_ALLERGIES)
 async def skip_allergies_callback(callback: CallbackQuery):
-    """Skip allergies: no save required. Send thanks + persistent keyboard once."""
+    """Skip allergies: no save required. Send thanks + inline keyboard once."""
     user = callback.from_user
     if user is None:
         await callback.answer("Не удалось определить пользователя.", show_alert=True)
@@ -546,14 +539,8 @@ async def _download_telegram_file(bot: Bot, file_id: str, declared_size: int) ->
     return data
 
 
-@dp.message(F.text == SEND_CONCLUSION_BUTTON)
-async def send_conclusion_hint(message: Message):
-    user = message.from_user
-    if user is None or message.chat.type != "private":
-        return
-    if is_doctor(user.id):
-        return
-    if not is_linked_patient(user.id):
+async def _answer_send_conclusion(message: Message, telegram_id: int) -> None:
+    if not is_linked_patient(telegram_id):
         await message.answer(DOC_NEED_INVITE_TEXT)
         return
     try:
@@ -561,6 +548,32 @@ async def send_conclusion_hint(message: Message):
     except RuntimeError:
         reply_markup = None
     await message.answer(DOC_UPLOAD_HINT_TEXT, reply_markup=reply_markup)
+
+
+@dp.message(F.text == SEND_CONCLUSION_BUTTON)
+async def send_conclusion_hint(message: Message):
+    user = message.from_user
+    if user is None or message.chat.type != "private":
+        return
+    if is_doctor(user.id):
+        return
+    await _answer_send_conclusion(message, user.id)
+
+
+@dp.callback_query(F.data == SEND_CONCLUSION_CALLBACK)
+async def send_conclusion_callback(callback: CallbackQuery):
+    user = callback.from_user
+    if user is None:
+        await callback.answer("Не удалось определить пользователя.", show_alert=True)
+        return
+    if is_doctor(user.id):
+        await callback.answer()
+        return
+    await callback.answer()
+    message = callback.message
+    if message is None:
+        return
+    await _answer_send_conclusion(message, user.id)
 
 
 @dp.message(F.content_type.in_({ContentType.DOCUMENT, ContentType.PHOTO}))

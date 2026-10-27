@@ -574,7 +574,11 @@ def suicide_risk_unblocked(telegram_id):
 
 
 def mark_suicide_risk_skipped(telegram_id, sent_at=None):
-    """Record ОСР skip once. True if this call set `suicide_risk_skipped_at`."""
+    """Record ОСР skip if not already set. True if this call set `suicide_risk_skipped_at`.
+
+    The first stamp unblocks later Telegram steps (`suicide_risk_unblocked`).
+    Follow-up messages on later «Пропустить» taps are not gated on this return value.
+    """
     stamp = _utc_stamp(sent_at)
     with conn() as db:
         db.execute(
