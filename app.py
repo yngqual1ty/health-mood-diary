@@ -118,8 +118,8 @@ MOOD_FOLLOWUP_TEXT = (
     "\n"
     "По кнопке ниже - можешь указать аллергии"
 )
-# Once ever after allergies save or Telegram «Пропустить». Inline Mini App
-# keyboard, not a daily reminder. Later allergy edits must not send this again.
+# After allergies save, thanks + inline Mini App keyboard once. Later allergy
+# edits must not send this again. Telegram «Пропустить» re-sends the same pack.
 BOT_MENU_THANKS_TEXT = (
     "Спасибо за заполнение!\n"
     "Отправил тебе клавиатуру для заполнения дневника сна, таблеток, и вообще всего функционала бота"
@@ -589,10 +589,17 @@ def send_mood_intro(telegram_id: int) -> bool:
     )
 
 
-def maybe_send_mood_intro(telegram_id: int, allow_skip: bool = False) -> None:
-    """One-time mood Mini App after the HADS/BDI/BAI repeat hint. Not ОСР/ШПАНА."""
+def maybe_send_mood_intro(telegram_id: int, allow_skip: bool = False, *, force: bool = False) -> None:
+    """Mood Mini App after the HADS/BDI/BAI repeat hint. Not ОСР/ШПАНА.
+
+    One-shot via `mood_intro_sent_at` unless `force` (later Telegram «Пропустить»).
+    """
     if not _telegram_api_url("sendMessage") or not _mini_app_url("mood"):
         log.warning("Шкала настроения: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
+        return
+    if force:
+        if send_mood_intro(telegram_id):
+            claim_mood_intro(telegram_id, allow_skip=True)
         return
     if not claim_mood_intro(telegram_id, allow_skip=allow_skip):
         return
@@ -639,10 +646,18 @@ def send_bot_menu(telegram_id: int) -> bool:
     return send_telegram_message(telegram_id, BOT_MENU_THANKS_TEXT, markup)
 
 
-def maybe_send_bot_menu(telegram_id: int) -> None:
-    """Once-ever thanks + inline Mini App keyboard after allergies save or skip."""
+def maybe_send_bot_menu(telegram_id: int, *, force: bool = False) -> None:
+    """Thanks + inline Mini App keyboard after allergies save or skip.
+
+    One-shot via `bot_menu_sent_at` unless `force` (later Telegram «Пропустить»).
+    Allergies save stays one-shot. Skip does not require a saved allergies row.
+    """
     if not _telegram_api_url("sendMessage") or not bot_menu_markup():
         log.warning("Клавиатура бота: нет BOT_TOKEN или HTTPS APP_URL, пропуск")
+        return
+    if force:
+        if send_bot_menu(telegram_id):
+            claim_bot_menu(telegram_id)
         return
     if not claim_bot_menu(telegram_id):
         return
@@ -661,20 +676,26 @@ def maybe_send_mood_followup(telegram_id: int) -> None:
         release_mood_followup(telegram_id)
 
 
-def maybe_send_scales_repeat_hint(telegram_id: int, allow_skip: bool = False) -> None:
-    """Once-ever Telegram hint after first completed HADS, BDI, or BAI.
+def maybe_send_scales_repeat_hint(telegram_id: int, allow_skip: bool = False, *, force: bool = False) -> None:
+    """Telegram hint after first completed HADS, BDI, or BAI.
 
-    Debounce: `users.scales_repeat_hint_sent_at` — one send per patient, ever.
-    Chosen over every completion / once per scale so the biweekly-reminder
-    explanation is not repeated with other HADS follow-ups (ШПАНА, pills, hotline).
-    Not sent after ОСР or ШПАНА.
-    After a successful hint, send the one-time mood Mini App (hint, then mood).
+    Debounce: `users.scales_repeat_hint_sent_at` — one send per patient, ever,
+    unless `force` (later Telegram «Пропустить»). Completing a starter scale
+    stays one-shot so the biweekly-reminder explanation is not repeated with
+    other HADS follow-ups (ШПАНА, pills, hotline). Not sent after ОСР or ШПАНА.
+    After a successful hint, send the mood Mini App (hint, then mood).
     If the hint already went out, still try mood so a failed first send can retry.
-    `allow_skip` is the Telegram «Пропустить» on the 3-scales message: same pack,
-    no pills intro (pills still wait for a completed HADS).
+    `allow_skip` is the non-force Telegram skip path: no completed starter scale
+    yet. `force=True` re-sends the same pack on every skip; pills still wait
+    for a completed HADS.
     """
     if not _telegram_api_url("sendMessage"):
         log.warning("Повтор шкал: нет BOT_TOKEN, пропуск")
+        return
+    if force:
+        if send_telegram_message(telegram_id, SCALES_REPEAT_HINT_TEXT):
+            claim_scales_repeat_hint(telegram_id, allow_skip=True)
+        maybe_send_mood_intro(telegram_id, allow_skip=True, force=True)
         return
     if not claim_scales_repeat_hint(telegram_id, allow_skip=allow_skip):
         maybe_send_mood_intro(telegram_id, allow_skip=allow_skip)

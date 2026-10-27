@@ -48,7 +48,6 @@ from db import (
     mark_suicide_risk_intro_sent,
     mark_suicide_risk_skipped,
     mark_allergies_skipped,
-    suicide_risk_unblocked,
     _utc_date,
     DocumentError,
     MAX_DOC_BYTES,
@@ -215,8 +214,9 @@ def pills_menu(day: str):
 # blocked on ОСР. Doctors /start get a Mini App dashboard button, not this patient pack.
 # ШПАНА stays one-time after the first HADS/BAI/BDI completion in app.py.
 # Pills-diary Mini App is one-time after a completed HADS in app.py (skipped if configured).
-# After allergies save or Telegram «Пропустить», patients get an inline
-# keyboard (mood / sleep / pills / allergies / send conclusion). Once per patient.
+# After allergies save, patients get an inline keyboard once (mood / sleep /
+# pills / allergies / send conclusion). Telegram «Пропустить» re-sends that
+# pack on every tap.
 
 
 async def send_suicide_risk_intro(message: Message, telegram_id: int) -> bool:
@@ -298,20 +298,30 @@ async def skip_osr_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == SKIP_CALLBACK_SCALES)
 async def skip_scales_callback(callback: CallbackQuery):
-    """Skip HADS/BDI/BAI for now: repeat-hint + mood intro once. Pills wait for HADS."""
+    """Skip HADS/BDI/BAI for now: repeat-hint + mood intro. Pills wait for HADS.
+
+    Every tap after /start must work for the same user: after a previous skip,
+    after they already completed a starter scale, and after another /start.
+    Mini App questionnaires stay ungated. Doctors are unchanged.
+    """
     user = callback.from_user
     if user is None:
         await callback.answer("Не удалось определить пользователя.", show_alert=True)
         return
     await callback.answer("Пропущено")
-    if is_doctor(user.id) or not suicide_risk_unblocked(user.id):
+    if is_doctor(user.id):
         return
-    maybe_send_scales_repeat_hint(user.id, allow_skip=True)
+    maybe_send_scales_repeat_hint(user.id, force=True)
 
 
 @dp.callback_query(F.data == SKIP_CALLBACK_ALLERGIES)
 async def skip_allergies_callback(callback: CallbackQuery):
-    """Skip allergies: no save required. Send thanks + inline keyboard once."""
+    """Skip allergies: no save required. Send thanks + inline keyboard.
+
+    Every tap after /start must work for the same user: after a previous skip,
+    after they already saved allergies, and after another /start.
+    Mini App stays ungated. Doctors are unchanged.
+    """
     user = callback.from_user
     if user is None:
         await callback.answer("Не удалось определить пользователя.", show_alert=True)
@@ -320,7 +330,7 @@ async def skip_allergies_callback(callback: CallbackQuery):
     if is_doctor(user.id):
         return
     mark_allergies_skipped(user.id)
-    maybe_send_bot_menu(user.id)
+    maybe_send_bot_menu(user.id, force=True)
 
 
 async def _send_reminder(bot: Bot, telegram_id: int) -> bool:

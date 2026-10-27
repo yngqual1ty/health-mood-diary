@@ -596,10 +596,11 @@ def mark_suicide_risk_skipped(telegram_id, sent_at=None):
 
 
 def mark_allergies_skipped(telegram_id, sent_at=None):
-    """Record allergies skip once. True if this call set `allergies_skipped_at`.
+    """Record allergies skip if not already set. True if this call set `allergies_skipped_at`.
 
     Does not set `allergies_completed`. The Mini App remains available; other
-    features are not gated on this flag. The thanks + keyboard uses `bot_menu_sent_at`.
+    features are not gated on this flag. The first stamp is bookkeeping only.
+    Follow-up messages on later «Пропустить» taps are not gated on this return value.
     """
     stamp = _utc_stamp(sent_at)
     with conn() as db:
@@ -792,10 +793,12 @@ def release_pills_intro(telegram_id):
 def claim_scales_repeat_hint(telegram_id, sent_at=None, allow_skip=False):
     """True if this caller may send the one-time HADS/BDI/BAI repeat-hint.
 
-    Once ever per patient (`users.scales_repeat_hint_sent_at`), not per scale
-    and not on every later completion. The copy explains biweekly reminders;
-    sending it again would spam alongside pills/ШПАНА/hotline after HADS.
-    `allow_skip` is the Telegram «Пропустить» path: no completed starter scale yet.
+    Once ever per patient (`users.scales_repeat_hint_sent_at`) for scale
+    *completion*, not per scale and not on every later fill. The copy explains
+    biweekly reminders; sending it again would spam alongside pills/ШПАНА/hotline
+    after HADS. `allow_skip` is the Telegram «Пропустить» path: no completed
+    starter scale yet. Later skip taps send with `force=True` and are not
+    gated on this return value.
     """
     stamp = _utc_stamp(sent_at)
     skip_gate = "" if allow_skip else """
@@ -835,10 +838,11 @@ def release_scales_repeat_hint(telegram_id):
 def claim_mood_intro(telegram_id, sent_at=None, allow_skip=False):
     """True if this caller may send the one-time daily-mood Mini App intro.
 
-    Once ever per patient (`users.mood_intro_sent_at`). Same gate as the
-    HADS/BDI/BAI repeat hint: completed starter scale or skipped 3-scales,
-    patient only. Not ОСР or ШПАНА. Call after the hint so Telegram order
-    is hint, then mood.
+    Once ever per patient (`users.mood_intro_sent_at`) for scale *completion*.
+    Same gate as the HADS/BDI/BAI repeat hint: completed starter scale or
+    skipped 3-scales, patient only. Not ОСР or ШПАНА. Call after the hint so
+    Telegram order is hint, then mood. Later skip taps send with `force=True`
+    and are not gated on this return value.
     """
     stamp = _utc_stamp(sent_at)
     skip_gate = "" if allow_skip else """
@@ -914,9 +918,10 @@ def release_mood_followup(telegram_id):
 def claim_bot_menu(telegram_id, sent_at=None):
     """True if this caller may send the one-time thanks + persistent bot keyboard.
 
-    Once ever per patient (`users.bot_menu_sent_at`). After the allergies intro
-    (`mood_followup_sent_at`): first allergies save or Telegram «Пропустить».
-    Later allergy edits must not send it again.
+    Once ever per patient (`users.bot_menu_sent_at`) for allergies *save*.
+    After the allergies intro (`mood_followup_sent_at`). Later allergy edits
+    must not send it again. Telegram «Пропустить» re-sends with `force=True`
+    and is not gated on this return value.
     """
     stamp = _utc_stamp(sent_at)
     with conn() as db:
