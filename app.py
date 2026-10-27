@@ -470,13 +470,34 @@ def _mini_app_url(path: str) -> str | None:
     return f"{app_url.rstrip('/')}/{path.strip('/')}/"
 
 
+_MARKUP_ROOT_KEYS = ("inline_keyboard", "keyboard", "remove_keyboard", "force_reply")
+
+
+def _web_app_keyboard_button(text: str, path: str) -> dict | None:
+    url = _mini_app_url(path)
+    if not url:
+        return None
+    return {"text": text, "web_app": {"url": url}}
+
+
+def _send_message_reply_markup(reply_markup: dict) -> dict:
+    """Pass ReplyKeyboardMarkup (`keyboard`) and InlineKeyboardMarkup through as-is.
+
+    Do not wrap a persistent reply keyboard as `inline_keyboard` — that drops
+    KeyboardButton.web_app and Telegram would treat the keys as plain text.
+    """
+    if any(key in reply_markup for key in _MARKUP_ROOT_KEYS):
+        return reply_markup
+    return {"inline_keyboard": reply_markup}
+
+
 def send_telegram_message(chat_id: int, text: str, reply_markup: dict | None = None) -> bool:
     url = _telegram_api_url("sendMessage")
     if not url:
         return False
     payload = {"chat_id": chat_id, "text": text}
     if reply_markup:
-        payload["reply_markup"] = reply_markup
+        payload["reply_markup"] = _send_message_reply_markup(reply_markup)
     request = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode(),
@@ -590,23 +611,17 @@ def send_mood_followup(telegram_id: int) -> bool:
 
 
 def bot_menu_markup() -> dict | None:
-    mood = _mini_app_url("mood")
-    sleep = _mini_app_url("sleep")
-    pills = _mini_app_url("pills-diary")
-    allergies = _mini_app_url("allergies")
+    mood = _web_app_keyboard_button("Оценить настроение", "mood")
+    sleep = _web_app_keyboard_button("Дневник сна", "sleep")
+    pills = _web_app_keyboard_button("Дневник таблеток", "pills-diary")
+    allergies = _web_app_keyboard_button("Указать аллергии", "allergies")
     if not (mood and sleep and pills and allergies):
         return None
     return {
         "keyboard": [
-            [{"text": "Оценить настроение", "web_app": {"url": mood}}],
-            [
-                {"text": "Дневник сна", "web_app": {"url": sleep}},
-                {"text": "Дневник таблеток", "web_app": {"url": pills}},
-            ],
-            [
-                {"text": "Указать аллергии", "web_app": {"url": allergies}},
-                {"text": SEND_CONCLUSION_BUTTON},
-            ],
+            [mood],
+            [sleep, pills],
+            [allergies, {"text": SEND_CONCLUSION_BUTTON}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
