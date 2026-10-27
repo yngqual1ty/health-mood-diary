@@ -1312,6 +1312,234 @@ def _unlink_patient_document_files(rows):
             pass
 
 
+def seed_dev_patient_data(
+    telegram_id,
+    *,
+    days,
+    moods,
+    sleep_rows,
+    pills_logs,
+    regimen_items=None,
+    allergies_text=None,
+    notes=None,
+    answers=None,
+):
+    """Insert demo diary rows for one Telegram user over a calendar-day window.
+
+    Idempotency (re-seed same user):
+    - users: INSERT OR IGNORE (existing role/profile kept).
+    - moods: replace all rows whose Moscow-naive date(created_at) is in `days`.
+    - sleep_log / pills_log: upsert by (patient, date).
+    - regimen: created only if the patient has none.
+    - allergies: set only if empty / not completed.
+    - patient_notes: insert a note only when that calendar day has no note yet.
+    - answers: replace completed rows for the same questionnaire_id on the same
+      APP_TIMEZONE calendar day (created_at is UTC-naive, like live POSTs).
+    Does not send Telegram messages.
+    """
+    days = list(days)
+    moods = list(moods or [])
+    sleep_rows = list(sleep_rows or [])
+    pills_logs = list(pills_logs or [])
+    notes = list(notes or [])
+    answers = list(answers or [])
+    stats = {
+        "user_created": False,
+        "moods": 0,
+        "sleep_log": 0,
+        "pills_regimen": "skipped",
+        "pills_log": 0,
+        "allergies": "skipped",
+        "notes": 0,
+        "notes_skipped": 0,
+        "answers": {},
+        "answers_replaced": 0,
+    }
+    with conn() as db:
+        cursor = db.execute(
+            "INSERT INTO users (telegram_id) VALUES (?) ON CONFLICT(telegram_id) DO NOTHING",
+            (telegram_id,),
+        )
+        stats["user_created"] = cursor.rowcount == 1
+
+        if days:
+            placeholders = ", ".join("?" for _ in days)
+            db.execute(
+                f"""
+                DELETE FROM moods
+                WHERE patient_telegram_id = ?
+                  AND date(created_at) IN ({placeholders})
+                """,
+                (telegram_id, *days),
+            )
+        for row in moods:
+            db.execute(
+                """
+                INSERT INTO moods(patient_telegram_id, score, emotions, note, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    telegram_id,
+                    row["score"],
+                    row.get("emotions") or "",
+                    row.get("note") or "",
+                    row["created_at"],
+                ),
+            )
+            stats["moods"] += 1
+
+        for row in sleep_rows:
+            db.execute(
+                """
+                INSERT INTO sleep_log (patient_telegram_id, date, quality, hours, note)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(patient_telegram_id, date) DO UPDATE SET
+                    quality = excluded.quality,
+                    hours = excluded.hours,
+                    note = excluded.note
+                """,
+                (
+                    telegram_id,
+                    row["date"],
+                    row["quality"],
+                    row.get("hours"),
+                    (row.get("note") or "").strip(),
+                ),
+            )
+            stats["sleep_log"] += 1
+
+        existing_regimen = db.execute(
+            "SELECT items FROM regimen WHERE patient_telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+        if existing_regimen:
+            stats["pills_regimen"] = "existed"
+        elif regimen_items:
+            db.execute(
+                """
+                INSERT INTO regimen (patient_telegram_id, items, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    telegram_id,
+                    json.dumps(regimen_items, ensure_ascii=False),
+                    _utc_stamp(),
+                ),
+            )
+            stats["pills_regimen"] = "created"
+
+        for row in pills_logs:
+            db.execute(
+                """
+                INSERT INTO pills_log (patient_telegram_id, date, taken, note)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(patient_telegram_id, date) DO UPDATE SET
+                    taken = excluded.taken,
+                    note = excluded.note
+                """,
+                (
+                    telegram_id,
+                    row["date"],
+                    row["taken"],
+                    (row.get("note") or "").strip(),
+                ),
+            )
+            stats["pills_log"] += 1
+
+        user_row = db.execute(
+            "SELECT allergies, allergies_completed FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+        allergies_empty = not user_row or (
+            not bool(user_row["allergies_completed"])
+            and not (user_row["allergies"] or "").strip()
+        )
+        if allergies_text is not None and allergies_empty:
+            db.execute(
+                """
+                UPDATE users
+                SET allergies = ?, allergies_completed = 1
+                WHERE telegram_id = ?
+                """,
+                (allergies_text, telegram_id),
+            )
+            stats["allergies"] = "set"
+
+        existing_note_days = {
+            row["d"]
+            for row in db.execute(
+                """
+                SELECT date(created_at) AS d
+                FROM patient_notes
+                WHERE patient_telegram_id = ?
+                """,
+                (telegram_id,),
+            ).fetchall()
+            if row["d"]
+        }
+        for row in notes:
+            if row["day"] in existing_note_days:
+                stats["notes_skipped"] += 1
+                continue
+            db.execute(
+                """
+                INSERT INTO patient_notes (patient_telegram_id, text, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (telegram_id, row["text"], row["created_at"]),
+            )
+            stats["notes"] += 1
+            existing_note_days.add(row["day"])
+
+        seed_keys = {
+            (item["questionnaire_id"], item["day"]) for item in answers
+        }
+        if seed_keys:
+            qids = sorted({qid for qid, _day in seed_keys})
+            q_placeholders = ", ".join("?" for _ in qids)
+            existing_answers = db.execute(
+                f"""
+                SELECT id, questionnaire_id, created_at
+                FROM answers
+                WHERE patient_telegram_id = ?
+                  AND questionnaire_id IN ({q_placeholders})
+                """,
+                (telegram_id, *qids),
+            ).fetchall()
+            to_delete = [
+                row["id"]
+                for row in existing_answers
+                if (row["questionnaire_id"], app_calendar_date(row["created_at"]))
+                in seed_keys
+            ]
+            if to_delete:
+                db.execute(
+                    f"DELETE FROM answers WHERE id IN ({', '.join('?' for _ in to_delete)})",
+                    to_delete,
+                )
+                stats["answers_replaced"] = len(to_delete)
+        for item in answers:
+            db.execute(
+                """
+                INSERT INTO answers(
+                    patient_telegram_id, questionnaire_id, payload, status, result, created_at
+                )
+                VALUES (?, ?, ?, 'completed', ?, ?)
+                """,
+                (
+                    telegram_id,
+                    item["questionnaire_id"],
+                    json.dumps(item["payload"], ensure_ascii=False),
+                    json.dumps(item["result"], ensure_ascii=False),
+                    item["created_at"],
+                ),
+            )
+            qid = item["questionnaire_id"]
+            stats["answers"][qid] = stats["answers"].get(qid, 0) + 1
+
+    return stats
+
+
 def reset_dev_data():
     """Wipe all diary data so Telegram /start and after-ОСР messages fire again.
 

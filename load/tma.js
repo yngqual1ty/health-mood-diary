@@ -44,8 +44,9 @@ const TELEGRAM_ID_BASE = Number(__ENV.TELEGRAM_ID_BASE || 2000000000) || 2000000
 
 export const options = {
   stages: [
-    { duration: '10s', target: VUS },
-    { duration: DURATION, target: VUS },
+    { duration: '10s', target: 50 },
+    { duration: '30s', target: 100 },
+    { duration: '30s', target: 200 },
     { duration: '10s', target: 0 },
   ],
   thresholds: {

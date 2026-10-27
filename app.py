@@ -6,7 +6,7 @@ import secrets
 import urllib.error
 import urllib.request
 from contextvars import ContextVar
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -62,6 +62,7 @@ from db import (
     delete_session,
     delete_sessions_for_user,
     reset_dev_data,
+    seed_dev_patient_data,
 )
 from auth import validate_init_data, validate_login_widget, AuthError
 import clinical_rag
@@ -407,6 +408,10 @@ class SleepIn(BaseModel):
     hours: float | None = Field(default=None, ge=0, le=24)
     note: str = Field(default="", max_length=2000)
     date: str | None = None
+
+
+class SeedIn(BaseModel):
+    telegram_id: int = Field(gt=0)
 
 
 def normalized_medication_times(times: list[str]) -> list[str]:
@@ -953,6 +958,319 @@ def dev_reset(x_dev_reset_token: str | None = Header(default=None)):
     cleared = reset_dev_data()
     _ensure_admin_doctor()
     return {"ok": True, "cleared": cleared}
+
+
+SEED_WINDOW_DAYS = 14
+SEED_QUESTIONNAIRES = ("suicide-risk", "hads", "bdi", "bai", "panas")
+_SEED_MOOD_SCORES = (3, 4, 2, 3, 4, 5, 3, 4, 2, 3, 5, 4, 3, 4, 5)
+_SEED_MOOD_EMOTIONS = (
+    "спокойствие",
+    "усталость",
+    "тревога",
+    "надежда",
+    "раздражение",
+    "радость",
+    "",
+    "спокойствие, усталость",
+    "тревога",
+    "",
+    "радость",
+    "надежда",
+    "усталость",
+    "спокойствие",
+    "радость",
+)
+_SEED_MOOD_NOTES = (
+    "День как обычно",
+    "",
+    "Сон был коротким",
+    "Прогулка вечером",
+    "",
+    "Хороший день на работе",
+    "",
+    "Немного тревожно утром",
+    "",
+    "Спокойный вечер",
+    "Встреча с друзьями",
+    "",
+    "Устал после дня",
+    "Почти без переживаний",
+    "День прошёл ровно",
+)
+_SEED_SLEEP_QUALITY = (
+    "ok", "good", "bad", "ok", "good",
+    "ok", "good", "ok", "bad", "ok",
+    "good", "ok", "good", "ok", "good",
+)
+_SEED_PILLS_TAKEN = (
+    "yes", "yes", "partial", "yes", "yes",
+    "yes", "no", "yes", "yes", "partial",
+    "yes", "yes", "yes", "yes", "yes",
+)
+_SEED_NOTE_TEXTS = (
+    (2, "Неделя началась тяжеловато, но без срывов."),
+    (7, "Сон лучше, настроение ровнее, чем неделю назад."),
+    (12, "Таблетки почти не пропускаю. Хочу обсудить схему на приёме."),
+)
+_SEED_REGIMEN = (
+    {"name": "Сертралин", "time": "09:00", "note": "после завтрака"},
+    {"name": "Мелатонин", "time": "22:00"},
+)
+_SEED_ALLERGIES = "Пенициллин, пыльца берёзы"
+
+
+def _seed_calendar_days():
+    today = datetime.now(APP_TIMEZONE).date()
+    start = today - timedelta(days=SEED_WINDOW_DAYS)
+    return [start + timedelta(days=offset) for offset in range(SEED_WINDOW_DAYS + 1)]
+
+
+def _moscow_naive_stamp(day: date, hour: int, minute: int) -> str:
+    return f"{day.isoformat()} {hour:02d}:{minute:02d}:00"
+
+
+def _utc_naive_for_moscow(day: date, hour: int, minute: int) -> str:
+    local = datetime(day.year, day.month, day.day, hour, minute, 0, tzinfo=APP_TIMEZONE)
+    return local.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _option_values(item) -> list[int]:
+    values = []
+    for option in item.get("options") or []:
+        value = option.get("value")
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            values.append(value)
+        elif isinstance(value, str) and value.lstrip("-").isdigit():
+            values.append(int(value))
+    return sorted(set(values))
+
+
+def _value_at_intensity(values: list[int], intensity: float) -> int:
+    t = min(1.0, max(0.0, intensity))
+    index = int(round(t * (len(values) - 1)))
+    return values[index]
+
+
+def _lower_option_value(item, current: int) -> int | None:
+    values = [value for value in _option_values(item) if value < current]
+    return values[-1] if values else None
+
+
+def _sample_questionnaire_answers(definition, intensity: float, fill_index: int) -> dict:
+    answers = {}
+    qid = definition.get("id")
+    for index, item in enumerate(definition.get("items") or []):
+        values = _option_values(item)
+        if not values:
+            continue
+        domain = item.get("domain")
+        wave = 0.06 * ((index + fill_index * 3) % 7 - 3)
+        level = intensity + wave
+        if qid == "hads" and domain == "D":
+            level = 0.08 + fill_index * 0.16 + level * 0.32
+        elif qid == "bdi":
+            level = 0.18 + fill_index * 0.08 + intensity * 0.38 + wave
+        elif qid == "suicide-risk":
+            level = 0.05 if index == 0 else 0.0
+        elif qid == "panas" and domain == "NA":
+            level = 0.15 + level * 0.25
+        elif qid == "panas" and domain == "PA":
+            level = 0.45 + level * 0.35
+        if item.get("id") == "bdi-9":
+            answers[item["id"]] = min(values)
+            continue
+        answers[item["id"]] = _value_at_intensity(values, level)
+    return answers
+
+
+def _clamp_seed_answers(qid: str, definition, answers: dict) -> tuple[dict, dict]:
+    items = definition.get("items") or []
+
+    def over_alert() -> bool:
+        result = score_questionnaire(definition, answers)
+        if qid == "hads":
+            score = int(((result.get("domains") or {}).get("D") or {}).get("score") or 0)
+            return score >= HADS_D_THRESHOLD
+        if qid == "bdi":
+            return int((result.get("score") or 0)) >= BDI_THRESHOLD
+        if qid == "suicide-risk":
+            return questionnaire_item_sum(definition, answers) >= OSR_SUM_THRESHOLD
+        return False
+
+    guard = 0
+    while over_alert() and guard < 200:
+        guard += 1
+        candidates = items
+        if qid == "hads":
+            domain_items = [item for item in items if item.get("domain") == "D"]
+            candidates = domain_items or items
+        reduced = False
+        for item in reversed(candidates):
+            item_id = item.get("id")
+            if item_id not in answers:
+                continue
+            lower = _lower_option_value(item, answers[item_id])
+            if lower is None:
+                continue
+            answers[item_id] = lower
+            reduced = True
+            break
+        if not reduced:
+            break
+    return answers, score_questionnaire(definition, answers)
+
+
+def _build_seed_answers(days: list[date]) -> list[dict]:
+    definitions = questionnaire_definitions()
+    missing = [qid for qid in SEED_QUESTIONNAIRES if qid not in definitions]
+    if missing:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Нет определений опросников: {', '.join(missing)}",
+        )
+    # Spread across the window so /api/me/results (excludes today) still has history.
+    last = len(days) - 1
+    yesterday = max(0, last - 1)
+    schedule = (
+        ("suicide-risk", 0, 0.1),
+        ("hads", 1, 0.38),
+        ("bdi", 2, 0.34),
+        ("bai", 3, 0.40),
+        ("panas", 6, 0.50),
+        ("bai", min(10, yesterday), 0.52),
+        ("bdi", min(12, yesterday), 0.46),
+        ("hads", yesterday, 0.55),
+    )
+    fills: dict[str, int] = {}
+    rows = []
+    used_slots: set[tuple[str, str]] = set()
+    for qid, day_index, intensity in schedule:
+        day_index = min(max(day_index, 0), last)
+        day = days[day_index]
+        slot = (qid, day.isoformat())
+        if slot in used_slots:
+            continue
+        used_slots.add(slot)
+        fill_index = fills.get(qid, 0)
+        fills[qid] = fill_index + 1
+        definition = definitions[qid]
+        payload = _sample_questionnaire_answers(definition, intensity, fill_index)
+        payload, result = _clamp_seed_answers(qid, definition, payload)
+        hour = 11 + (fill_index * 2 + day_index) % 8
+        minute = 10 + (day_index * 7) % 40
+        rows.append(
+            {
+                "questionnaire_id": qid,
+                "day": day.isoformat(),
+                "payload": payload,
+                "result": result,
+                "created_at": _utc_naive_for_moscow(day, hour, minute),
+            }
+        )
+    return rows
+
+
+def _build_seed_payload():
+    days = _seed_calendar_days()
+    moods = []
+    sleep_rows = []
+    pills_logs = []
+    for index, day in enumerate(days):
+        iso = day.isoformat()
+        mood_hour = 9 + (index * 3) % 12
+        mood_minute = 5 + (index * 11) % 50
+        score = _SEED_MOOD_SCORES[index % len(_SEED_MOOD_SCORES)]
+        moods.append(
+            {
+                "day": iso,
+                "score": score,
+                "emotions": _SEED_MOOD_EMOTIONS[index % len(_SEED_MOOD_EMOTIONS)],
+                "note": _SEED_MOOD_NOTES[index % len(_SEED_MOOD_NOTES)],
+                "created_at": _moscow_naive_stamp(day, mood_hour, mood_minute),
+            }
+        )
+        hours = round(6.0 + (index % 5) * 0.6 + (0.4 if index % 3 else 0), 1)
+        sleep_rows.append(
+            {
+                "date": iso,
+                "quality": _SEED_SLEEP_QUALITY[index % len(_SEED_SLEEP_QUALITY)],
+                "hours": hours,
+                "note": "Короткий сон" if hours < 6.5 else "",
+            }
+        )
+        taken = _SEED_PILLS_TAKEN[index % len(_SEED_PILLS_TAKEN)]
+        pills_logs.append(
+            {
+                "date": iso,
+                "taken": taken,
+                "note": "Пропустил вечернюю" if taken != "yes" else "",
+            }
+        )
+    notes = [
+        {
+            "day": days[offset].isoformat(),
+            "text": text,
+            "created_at": _moscow_naive_stamp(days[offset], 18, 20 + offset),
+        }
+        for offset, text in _SEED_NOTE_TEXTS
+        if offset < len(days)
+    ]
+    return {
+        "days": [day.isoformat() for day in days],
+        "moods": moods,
+        "sleep_rows": sleep_rows,
+        "pills_logs": pills_logs,
+        "notes": notes,
+        "answers": _build_seed_answers(days),
+    }
+
+
+def _run_dev_seed(telegram_id: int) -> dict:
+    if telegram_id <= 0:
+        raise HTTPException(status_code=422, detail="telegram_id must be a positive integer")
+    payload = _build_seed_payload()
+    stats = seed_dev_patient_data(
+        telegram_id,
+        days=payload["days"],
+        moods=payload["moods"],
+        sleep_rows=payload["sleep_rows"],
+        pills_logs=payload["pills_logs"],
+        regimen_items=list(_SEED_REGIMEN),
+        allergies_text=_SEED_ALLERGIES,
+        notes=payload["notes"],
+        answers=payload["answers"],
+    )
+    return {
+        "ok": True,
+        "telegram_id": telegram_id,
+        "timezone": str(APP_TIMEZONE),
+        "from": payload["days"][0],
+        "to": payload["days"][-1],
+        "days": len(payload["days"]),
+        "inserted": stats,
+        "idempotency": (
+            "Re-seed replaces moods/sleep/pills_log and questionnaire answers "
+            "for the same calendar days. Creates the user row if missing. "
+            "Creates a pills regimen and allergies only when empty. "
+            "Skips a note if that day already has one. Does not send Telegram messages."
+        ),
+    }
+
+
+@app.post("/api/dev/seed", include_in_schema=False)
+def dev_seed(body: SeedIn, x_dev_reset_token: str | None = Header(default=None)):
+    if not _dev_reset_token_ok(x_dev_reset_token):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return _run_dev_seed(body.telegram_id)
+
+
+@app.post("/api/dev/seed/{telegram_id}", include_in_schema=False)
+def dev_seed_path(telegram_id: int, x_dev_reset_token: str | None = Header(default=None)):
+    if not _dev_reset_token_ok(x_dev_reset_token):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return _run_dev_seed(telegram_id)
 
 
 @app.get("/api/me")
